@@ -11,24 +11,15 @@ map web page for plotting "things" on.
 
 ### Updates
 
-- v2.17.2 - Add smallplane icon.
-- v2.17.1 - More complete feedback on click, better popup image sizing.
-- v2.16.3 - Ensure polygons can be deleted.
-- v2.16.2 - better handling of unpacked gpz objects.
-- v2.16.0 - Allow specifying custom base map server.
-- v2.15.8 - Adjust ui check timing for UI worldmap.
-- v2.15.7 - Tidy up geoJson handling a bit more.
-- v2.15.5 - Fix SIDC icons to accept unicoded icons as labels.
-- v2.15.4 - Let clear heatmap command do what it says.
-- v2.15.3 - Fix panit command to work, try to use alt units, popup alignments.
-- v2.15.0 - let speed be text and specify units if required (kt,kn,knots,mph,kmh,kph) default m/s.
-- v2.14.0 - Let geojson features be clickable if added as overlay.
-- v2.13.4 - Fix list of map choices to be in sync. Fix popup auto sizing.
-- v2.13.3 - Fix unchanged layer propagation.
-- v2.13.2 - Add mayflower icon.
-- v2.13.0 - Tidy velocity layer. Feedback any url parameters.
-- v2.12.1 - Only show online layer options if we are online.
-- v2.12.0 - Add live rainfall radar data layer. Remove some non-loading overlays.
+- v2.23.5 - Fix addtoheatmap. Issue #192
+- v2.23.4 - Fix opacity of area borders
+- v2.23.3 - Fix initial load of maps
+- v2.23.2 - Add convex-hull example
+- v2.23.1 - Fix saving of custom map layer
+- v2.23.0 - Give logo and id so it can be overridden by toplogo command. PR #188.
+- v2.22.3 - Don't show empty popup for geojson object. Issue #186. Add wobble to null island.
+- v2.22.2 - Be more tolerant of speed string types
+- v2.22.0 - Separate out layer events in worldmap in
 
 - see [CHANGELOG](https://github.com/dceejay/RedMap/blob/master/CHANGELOG.md) for full list of changes.
 
@@ -137,6 +128,7 @@ then rather than draw a point and icon it draws the polygon. If the "area" array
 elements, then it assumes this is a bounding box for a rectangle and draws a rectangle.
 
 Likewise if it contains a **line** property it will draw the polyline.
+If the payload also includes a property `fit:true` the map will zoom to fit the line or area.
 
 There are extra optional properties you can specify - see Options below.
 
@@ -240,14 +232,15 @@ Areas, Rectangles, Lines, Circles and Ellipses can also specify more optional pr
 
  - **layer** : declares which layer you put it on.
  - **color** : can set the colour of the polygon or line.
+ - **opacity** : the opacity of the line or outline.
  - **fillColor** : can set the fill colour of the polygon.
  - **fillOpacity** : can set the opacity of the polygon fill colour.
  - **dashArray** : optional dash array for polyline.
  - **clickable** : boolean - set to true to allow click to show popup.
  - **popup** : html string to display in popup (as well as name).
- - **editable** : boolean - set to true to allow simple edit/delete right click contextmenu
- - **contextmenu** : html string to display a more complex right click contextmenu
- - **weight** : the width of the line (or outline)
+ - **editable** : boolean - set to true to allow simple edit/delete right click contextmenu.
+ - **contextmenu** : html string to display a more complex right click contextmenu.
+ - **weight** : the width of the line or outline.
 
 Other properties can be found in the leaflet documentation.
 
@@ -333,6 +326,7 @@ The **worldmap in** node can be used to receive various events from the map. Exa
 
     { "action": "connected" }  // useful to trigger delivery or redraw of points
     { "action": "disconnect", "clients": 1 }  // when a client disconnects - reports number remaining
+    {"action":"bounds", "south":50.55, "west":-1.48, "north":50.72, "east":-0.98}  // reports the outer bounds of the hmap area when zoomed or moved
 
     { "action": "click", "name":"Jason", "layer":"gps", "icon":"male", "iconColor":"blue", "lat":51.024985, "lon":-1.39698 }   // when a marker is clicked
     { "action": "move", "name":"Jason", "layer":"gps", "icon":"male", "iconColor":"blue", "lat":51.044632, "lon":-1.359901 }    // when a marker is moved
@@ -408,6 +402,8 @@ Optional properties include
  - **button** - if supplied with a `name` and `icon` property - adds a button to provide user input - sends
  a msg `{"action":"button", "name":"the_button_name"}` to the worldmap in node. If supplied with a `name` property only, it will remove the button. Optional `position` property can be 'bottomright', 'bottomleft', 'topleft' or 'topright' (default).
  - **contextmenu** - html string to define the right click menu when not on a marker. Defaults to the simple add marker input. Empty string `""` disables this right click.
+ - **toptitle** - Words to replace title in title bar (if not in iframe)
+ - **toplogo** - URL to logo image for top tile bar (if not in iframe) - ideally 60px by 24px.
 
 #### To switch layer, move map and zoom
 
@@ -455,6 +451,13 @@ Or with an input box
     msg.payload.command : {
         contextmenu: '<input name="slide1" type="range" min="1" max="100" value="50" onchange=\'feedback(this.name,this.value,"myEventName")\' >'
     }
+
+Example simple form
+
+```
+[{"id":"7351100bacb1f5fe","type":"function","z":"4aa2ed2fd1b11362","name":"","func":"msg.payload = { command: {\ncontextmenu: String.raw`\nText <input type=\"text\" id=\"sometext\" value=\"hello\"><br/>\nNumber <input type=\"number\" id=\"somenum\" value=\"5\"><br/>\n<input type=\"button\" value=\"Send\" onclick=\n'feedback(\"myform\",{\n    \"st\":document.getElementById(\"sometext\").value,\n    \"sn\":document.getElementById(\"somenum\").value,\n})'\n>\n`\n}}\nreturn msg;","outputs":1,"noerr":0,"initialize":"","finalize":"","libs":[],"x":350,"y":360,"wires":[["a6a82f2e8efc44fc"]]},{"id":"7b595f0c8f6ac710","type":"worldmap in","z":"4aa2ed2fd1b11362","name":"","path":"/worldmap","events":"connect","x":195,"y":360,"wires":[["7351100bacb1f5fe"]]}]
+```
+
 
 See the section on **Utility Functions** for details of the feedback function.
 

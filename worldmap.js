@@ -32,10 +32,14 @@ module.exports = function(RED) {
         node.showgrid = n.showgrid || "false";
         node.allowFileDrop = n.allowFileDrop || "false";
         node.path = n.path || "/worldmap";
+        node.maplist = n.maplist;
+        node.overlist = n.overlist;
         node.mapname = n.mapname || "";
         node.mapurl = n.mapurl || "";
         node.mapopt = n.mapopt || "";
         node.mapwms = n.mapwms || false;
+        if (n.maplist === undefined) { node.maplist = "OSMG,OSMC,EsriC,EsriS,EsriT,EsriDG,UKOS,SW"; }
+        if (n.overlist === undefined) { node.overlist = "DR,CO,RA,DN,HM"; }
         try { node.mapopt2 = JSON.parse(node.mapopt); }
         catch(e) { node.mapopt2 = null; }
 
@@ -43,8 +47,9 @@ module.exports = function(RED) {
         if (!sockets[node.path]) {
             var libPath = path.posix.join(RED.settings.httpNodeRoot, node.path, 'leaflet', 'sockjs.min.js');
             var sockPath = path.posix.join(RED.settings.httpNodeRoot,node.path,'socket');
-            sockets[node.path] = sockjs.createServer({prefix:sockPath, sockjs_url:libPath, log:function() { return; }});
+            sockets[node.path] = sockjs.createServer({prefix:sockPath, sockjs_url:libPath, log:function(s,e) { return; }});
             sockets[node.path].installHandlers(RED.server);
+            sockets[node.path].on('error', function(e) { node.error("Socket Connection Error: "+e.stack); });
         }
         //node.log("Serving "+__dirname+" as "+node.path);
         node.log("started at "+node.path);
@@ -62,6 +67,8 @@ module.exports = function(RED) {
                 if (message.action === "connected") {
                     var m = {};
                     var c = {init:true};
+                    c.maplist = node.maplist;
+                    c.overlist = node.overlist;
                     if (node.layer && node.layer == "Custom") {
                         m.name = node.mapname;
                         m.url = node.mapurl;
@@ -87,7 +94,8 @@ module.exports = function(RED) {
                     c.hiderightclick = node.hiderightclick;
                     c.allowFileDrop = node.allowFileDrop;
                     c.coords = node.coords;
-                    c.toptitle = node.name;
+                    if (node.name) { c.toptitle = node.name; }
+                    //console.log("INIT",c)
                     client.write(JSON.stringify({command:c}));
                 }
             });
@@ -143,13 +151,11 @@ module.exports = function(RED) {
         var height = config.height;
         if (height == 0) { height = 10; }
         var size = ui.getSizes();
-        var frameWidth = (size.sx +size.cx) * width - size.cx;
-        var frameHeight = (size.sy +size.cy) * height - size.cy;
+        var frameWidth = (size.sx + size.cx) * width - size.cx;
+        var frameHeight = (size.sy + size.cy) * height - size.cy;
         var url = encodeURI(config.path);
         var html = `<style>.nr-dashboard-ui_worldmap{padding:0;}</style><div style="overflow:hidden;">
-<iframe src="${url}" width="${frameWidth}px" height="${frameHeight}px" style="border:none;"></iframe>
-</div>
-`;
+<iframe src="${url}" width="${frameWidth}px" height="${frameHeight}px" style="border:none;"></iframe></div>`;
         return html;
     }
 
@@ -211,12 +217,13 @@ module.exports = function(RED) {
             }
             setImmediate(function() { RED.nodes.registerType("ui_worldmap", UIWorldMap) });
         }
-    }, 250);
+    }, 100);
+
 
     var WorldMapIn = function(n) {
         RED.nodes.createNode(this,n);
         this.path = n.path || "/worldmap";
-        this.events = n.events || "all";
+        this.events = n.events || "connect,disconnect,point,bounds,files,draw,other";
         if (this.path.charAt(0) != "/") { this.path = "/" + this.path; }
         if (!sockets[this.path]) {
             var libPath = path.posix.join(RED.settings.httpNodeRoot, this.path, 'leaflet', 'sockjs.min.js');
@@ -236,14 +243,26 @@ module.exports = function(RED) {
             client.on('data', function(message) {
                 message = JSON.parse(message);
                 if (message.hasOwnProperty("action")) {
-                    if ((node.events === "files") && (message.action === "file"))  {
+                    if ((node.events.indexOf("connect")!==-1) && (message.action === "connected")) {
+                        setImmediate(function() {node.send({payload:message, topic:node.path.substr(1), _sessionid:client.id, _sessionip:sessionip})});
+                    }
+                    if ((node.events.indexOf("bounds")!==-1) && (message.action === "bounds")) {
+                        setImmediate(function() {node.send({payload:message, topic:node.path.substr(1), _sessionid:client.id, _sessionip:sessionip})});
+                    }
+                    if ((node.events.indexOf("point")!==-1) && ((message.action === "point")||(message.action === "move")||(message.action === "delete") ))  {
+                        setImmediate(function() {node.send({payload:message, topic:node.path.substr(1), _sessionid:client.id, _sessionip:sessionip})});
+                    }
+                    if ((node.events.indexOf("layer")!==-1) && (message.action.indexOf("layer") !== -1) )  {
+                        setImmediate(function() {node.send({payload:message, topic:node.path.substr(1), _sessionid:client.id, _sessionip:sessionip})});
+                    }
+                    if ((node.events.indexOf("files")!==-1) && (message.action === "file"))  {
                         message.content =  Buffer.from(message.content.split('base64,')[1], 'base64');
                         setImmediate(function() {node.send({payload:message, topic:node.path.substr(1), _sessionid:client.id, _sessionip:sessionip})});
                     }
-                    else if ((node.events === "connect") && (message.action === "connected")) {
+                    if ((node.events.indexOf("draw")!==-1) && (message.action === "draw"))  {
                         setImmediate(function() {node.send({payload:message, topic:node.path.substr(1), _sessionid:client.id, _sessionip:sessionip})});
                     }
-                    else if (node.events === "all") {
+                    if (node.events.indexOf("other")!==-1 && "connected,point,delete,move,draw,files,bounds".indexOf(message.action) === -1) {
                         setImmediate(function() {node.send({payload:message, topic:node.path.substr(1), _sessionid:client.id, _sessionip:sessionip})});
                     }
                 }
@@ -251,7 +270,7 @@ module.exports = function(RED) {
             client.on('close', function() {
                 delete clients[client.id];
                 node.status({fill:"green",shape:"ring",text:"connected "+Object.keys(clients).length,_sessionid:client.id});
-                if (node.events !== "files") {
+                if (node.events.indexOf("disconnect")!==-1) {
                     node.send({payload:{action:"disconnect", clients:Object.keys(clients).length}, topic:node.path.substr(1), _sessionid:client.id, _sessionip:sessionip});
                 }
             });
@@ -270,6 +289,7 @@ module.exports = function(RED) {
         sockets[this.path].on('connection', callback);
     }
     RED.nodes.registerType("worldmap in",WorldMapIn);
+
 
     var WorldMapTracks = function(n) {
         RED.nodes.createNode(this,n);
@@ -390,6 +410,7 @@ module.exports = function(RED) {
     }
     RED.nodes.registerType("worldmap-tracks",WorldMapTracks);
 
+
     var WorldMapHull = function(n) {
         RED.nodes.createNode(this,n);
         this.prop = n.prop || "layer";
@@ -465,16 +486,16 @@ module.exports = function(RED) {
                     node.send(newmsg);
                 }
                 if (leafletHull.length === 2 && (oldl === 1 || oldl === 3)) {
-                    newmsg.payload.deleted = true;
-                    node.send(newmsg);
-                    delete newmsg.payload.deleted;
+                    var newmsg2 = RED.util.cloneMessage(newmsg);
+                    newmsg2.payload.deleted = true;
+                    node.send(newmsg2);
                     newmsg.payload.line = leafletHull;
                     node.send(newmsg);
                 }
                 if (leafletHull.length === 3 && oldl === 2) {
-                    newmsg.payload.deleted = true;
-                    node.send(newmsg);
-                    delete newmsg.payload.deleted;
+                    var newmsg3 = RED.util.cloneMessage(newmsg);
+                    newmsg3.payload.deleted = true;
+                    node.send(newmsg3);
                 }
                 if (leafletHull.length >= 3) {
                     newmsg.payload.area = leafletHull;
@@ -504,7 +525,7 @@ module.exports = function(RED) {
     }
     RED.nodes.registerType("worldmap-hull",WorldMapHull);
 
-    RED.httpNode.get("/.ui-worldmap", function(req, res) {
+    RED.httpNode.get("/-ui-worldmap", function(req, res) {
         res.send(ui ? "true": "false");
     });
 }

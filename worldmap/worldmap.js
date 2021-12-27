@@ -24,10 +24,14 @@ var showUserMenu = true;
 var showLayerMenu = true;
 var showMouseCoords = false;
 var allowFileDrop = false;
+var heat;
 var minimap;
 var sidebyside;
 var layercontrol;
+var drawControl;
 var drawingColour = "#910000";
+var sendRoute;
+var sendDrawing;
 
 var iconSz = {
     "Team/Crew": 24,
@@ -46,36 +50,9 @@ var iconSz = {
     "Command": 44
 };
 
-// Polyfill assign for IE11 for now
-if (typeof Object.assign !== 'function') {
-    // Must be writable: true, enumerable: false, configurable: true
-    Object.defineProperty(Object, "assign", {
-        value: function assign(target, varArgs) { // .length of function is 2
-            'use strict';
-            if (target === null || target === undefined) {
-                throw new TypeError('Cannot convert undefined or null to object');
-            }
-            var to = Object(target);
-            for (var index = 1; index < arguments.length; index++) {
-                var nextSource = arguments[index];
-                if (nextSource !== null && nextSource !== undefined) {
-                    for (var nextKey in nextSource) {
-                    // Avoid bugs when hasOwnProperty is shadowed
-                        if (Object.prototype.hasOwnProperty.call(nextSource, nextKey)) {
-                            to[nextKey] = nextSource[nextKey];
-                        }
-                    }
-                }
-            }
-            return to;
-        },
-        writable: true,
-        configurable: true
-    });
-}
-
 // Create the socket
 var connect = function() {
+    // var transports = ["websocket", "xhr-streaming", "xhr-polling"],
     ws = new SockJS(location.pathname.split("index")[0] + 'socket');
     ws.onopen = function() {
         console.log("CONNECTED");
@@ -93,7 +70,11 @@ var connect = function() {
         setTimeout(function() { connect(); }, 2500);
     };
     ws.onmessage = function(e) {
-        try { var data = JSON.parse(e.data); handleData(data); }
+        try {
+            var data = JSON.parse(e.data);
+            if (data.hasOwnProperty("type") && data.hasOwnProperty("data") && data.type === "Buffer") { data = data.data.toString(); }
+            handleData(data);
+        }
         catch (e) { if (data) { console.log("BAD DATA",data); } }
         // console.log("DATA",typeof data,data);
     };
@@ -132,10 +113,17 @@ var handleData = function(data) {
             }
         }
         if (data.command) { doCommand(data.command); delete data.command; }
-        if (data.hasOwnProperty("type") && data.type.indexOf("Feature") === 0) { doGeojson("geojson",data); }
+        if (data.hasOwnProperty("type") && data.type.indexOf("Feature") === 0) {
+            if (data.hasOwnProperty('properties') && data.properties.hasOwnProperty('title')) {
+                doGeojson(data.properties.title,data)
+            }
+            else { doGeojson("geojson",data); }
+        }
         else if (data.hasOwnProperty("name")) { setMarker(data); }
         else {
-            console.log("SKIP",data);
+            if (JSON.stringify(data) !== '{}') {
+                console.log("SKIP",data);
+            }
             // if (typeof data === "string") { doDialog(data); }
             // else { console.log("SKIP",data); }
         }
@@ -433,7 +421,7 @@ setMaxAge();
 
 // move the daylight / nighttime boundary (if enabled) every minute
 function moveTerminator() { // if terminator line plotted move it every minute
-    if (layers["_daynight"].getLayers().length > 0) {
+    if (layers["_daynight"] && layers["_daynight"].getLayers().length > 0) {
         layers["_daynight"].clearLayers();
         layers["_daynight"].addLayer(L.terminator());
     }
@@ -613,7 +601,7 @@ map.on('baselayerchange', function(e) {
 });
 
 function showMapCurrentZoom() {
-    console.log("zoom:",map.getZoom(),". clusterAt:",clusterAt);
+    //console.log("ZOOM:",map.getZoom());
     for (var l in layers) {
         if (layers[l].hasOwnProperty("_zoom")) {
             if (map.getZoom() >= clusterAt) {
@@ -654,9 +642,13 @@ function showMapCurrentZoom() {
 map.on('zoomend', function() {
     showMapCurrentZoom();
     window.localStorage.setItem("lastzoom", map.getZoom());
+    var b = map.getBounds();
+    ws.send(JSON.stringify({action:"bounds", south:b._southWest.lat, west:b._southWest.lng, north:b._northEast.lat, east:b._northEast.lng, zoom:map.getZoom() }));
 });
 map.on('moveend', function() {
     window.localStorage.setItem("lastpos",JSON.stringify(map.getCenter()));
+    var b = map.getBounds();
+    ws.send(JSON.stringify({action:"bounds", south:b._southWest.lat, west:b._southWest.lng, north:b._northEast.lat, east:b._northEast.lng, zoom:map.getZoom() }));
 });
 
 //map.on('contextmenu', function(e) {
@@ -664,7 +656,8 @@ map.on('moveend', function() {
 //});
 
 // single right click to add a marker
-var addmenu = "<b>Add marker</b><br><input type='text' id='rinput' autofocus onkeydown='if (event.keyCode == 13) addThing();' placeholder='name (,icon, layer, colour, heading)'/>";
+var addmenu = "<b>Add marker</b><br><input type='text' id='rinput' autofocus onkeydown='if (event.keyCode == 13) addThing();' placeholder='name (,icon/SIDC, layer, colour, heading)'/>";
+if (navigator.onLine) { addmenu += '<br/><a href="https://spatialillusions.com/unitgenerator/" target="_new">MilSymbol SIDC generator</a>'; }
 var rightmenuMap = L.popup({keepInView:true, minWidth:250}).setContent(addmenu);
 
 var rclk = {};
@@ -679,8 +672,8 @@ var addThing = function() {
     var colo = (bits[3] || "#910000").trim();
     var hdg = parseFloat(bits[4] || 0);
     var drag = true;
-    var regi = /^[S,G,E,I,O][A-Z]{4}.*/i;  // if it looks like a SIDC code
-    var d = {action:"point", name:bits[0].trim(), layer:lay, draggable:drag, lat:rclk.lat, lon:rclk.lng, hdg:hdg};
+    var regi = /^[S,G,E,I,O][A-Z]{3}.*/i;  // if it looks like a SIDC code
+    var d = {action:"point", name:bits[0].trim(), layer:lay, draggable:drag, lat:rclk.lat, lon:rclk.lng, hdg:hdg, ttl:0 };
     if (regi.test(icon)) {
         d.SIDC = (icon.toUpperCase()+"------------").substr(0,12);
     }
@@ -746,378 +739,456 @@ map.on('contextmenu', function(e) {
     }
 });
 
-// Add all the base layer maps
-if (navigator.onLine) {
+// Add all the base layer maps if we are online.
+var addBaseMaps = function(maplist,first) {
+    //console.log("MAPS",first,maplist)
+    if (navigator.onLine) {
+        var layerlookup = { OSMG:"OSM grey", OSMC:"OSM", OSMH:"OSM Humanitarian", EsriC:"Esri", EsriS:"Esri Satellite",
+        EsriR:"Esri Relief", EsriT:"Esri Topography", EsriO:"Esri Ocean", EsriDG:"Esri Dark Grey", NatGeo: "National Geographic",
+        UKOS:"UK OS OpenData", UKOS45:"UK OS 1919-1947", UKOS00:"UK OS 1900", OpTop:"Open Topo Map",
+        HB:"Hike Bike OSM", ST:"Stamen Topography", SW: "Stamen Watercolor", AN:"AutoNavi (Chinese)" }
 
-    // Use this for OSM online maps
-    var osmUrl='https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
-    //var osmUrl='https://{s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png';
-    var osmAttrib='Map data © OpenStreetMap contributors';
-    var osmg = new L.TileLayer.Grayscale(osmUrl, {attribution:osmAttrib, maxNativeZoom:19, maxZoom:20});
-    basemaps["OSM grey"] = osmg;
+        // Use this for OSM online maps
+        var osmUrl='https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
+        var osmAttrib='Map data © OpenStreetMap contributors';
 
-    var osm = new L.TileLayer(osmUrl, {attribution:osmAttrib, maxNativeZoom:19, maxZoom:20});
-    basemaps["OSM"] = osm;
+        if (maplist.indexOf("OSMG")!==-1) {
+            basemaps[layerlookup["OSMG"]] = new L.TileLayer.Grayscale(osmUrl, {
+                attribution:osmAttrib,
+                maxNativeZoom:19,
+                maxZoom:20,
+                subdomains: ['a','b','c']
+            });
+        }
+        if (maplist.indexOf("OSMC")!==-1) {
+            basemaps[layerlookup["OSMC"]] = new L.TileLayer(osmUrl, {
+                attribution:osmAttrib,
+                maxNativeZoom:19,
+                maxZoom:20,
+                subdomains: ['a','b','c']
+            });
+        }
+        if (maplist.indexOf("OSMH")!==-1) {
+            basemaps[layerlookup["OSMH"]] = new L.TileLayer("https://{s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png", {
+                attribution:"Map data © OpenStreetMap Contributors. Courtesy of Humanitarian OpenStreetMap Team",
+                maxNativeZoom:19,
+                maxZoom:20,
+                subdomains: ['a','b']
+            });
+        }
 
-    // Extra Leaflet map layers from https://leaflet-extras.github.io/leaflet-providers/preview/
-    var Esri_WorldStreetMap = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}', {
-        attribution: 'Tiles &copy; Esri', maxNativeZoom:19, maxZoom:20
-    });
-    basemaps["Esri"] = Esri_WorldStreetMap;
+        // Extra Leaflet map layers from https://leaflet-extras.github.io/leaflet-providers/preview/
+        if (maplist.indexOf("EsriC")!==-1) {
+            basemaps[layerlookup["EsriC"]] = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}', {
+                attribution:'Tiles &copy; Esri',
+                maxNativeZoom:19,
+                maxZoom:20
+            });
+        }
 
-    var Esri_WorldImagery = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
-    //var Esri_WorldImagery = L.tileLayer('http://clarity.maptiles.arcgis.com/arcgis/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
-        attribution:'Tiles &copy; Esri', maxNativeZoom:17, maxZoom:20
-    });
-    basemaps["Esri Satellite"] = Esri_WorldImagery;
+        if (maplist.indexOf("EsriS")!==-1) {
+            basemaps[layerlookup["EsriS"]] = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+            //var Esri_WorldImagery = L.tileLayer('http://clarity.maptiles.arcgis.com/arcgis/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {{
+                attribution:'Tiles &copy; Esri',
+                maxNativeZoom:17, maxZoom:20
+            });
+        }
 
-    var Esri_WorldTopoMap = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}', {
-        attribution: 'Tiles &copy; Esri &mdash; Esri, DeLorme, NAVTEQ, TomTom, Intermap, iPC, USGS, FAO, NPS, NRCAN, GeoBase, Kadaster NL, Ordnance Survey, Esri Japan, METI, Esri China (Hong Kong), and the GIS User Community'
-    });
-    basemaps["Esri Topography"] = Esri_WorldTopoMap;
+        if (maplist.indexOf("EsriT")!==-1) {
+            basemaps[layerlookup["EsriT"]] = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}', {
+                attribution:'Tiles &copy; Esri &mdash; Esri, DeLorme, NAVTEQ, TomTom, Intermap, iPC, USGS, FAO, NPS, NRCAN, GeoBase, Kadaster NL, Ordnance Survey, Esri Japan, METI, Esri China (Hong Kong), and the GIS User Community'
+            });
+        }
 
-    // var Esri_WorldShadedRelief = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Shaded_Relief/MapServer/tile/{z}/{y}/{x}', {
-    //     attribution: 'Tiles &copy; Esri',
-    //     maxNativeZoom:13
-    // });
-    // basemaps["Esri Terrain"] = Esri_WorldShadedRelief;
+        if (maplist.indexOf("EsriR")!==-1) {
+            basemaps[layerlookup["EsriR"]] = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Shaded_Relief/MapServer/tile/{z}/{y}/{x}', {
+                attribution:'Tiles &copy; Esri',
+                maxNativeZoom:13,
+                maxZoom:16
+            });
+        }
 
-    var Esri_OceanBasemap = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Ocean_Basemap/MapServer/tile/{z}/{y}/{x}', {
-        attribution: 'Tiles &copy; Esri &mdash; Sources: GEBCO, NOAA, CHS, OSU, UNH, CSUMB, National Geographic, DeLorme, NAVTEQ, and Esri',
-        maxNativeZoom:13
-    });
-    basemaps["Esri Ocean"] = Esri_OceanBasemap;
+        if (maplist.indexOf("EsriO")!==-1) {
+            basemaps[layerlookup["EsriO"]] = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Ocean_Basemap/MapServer/tile/{z}/{y}/{x}', {
+                attribution:'Tiles &copy; Esri &mdash; Sources: GEBCO, NOAA, CHS, OSU, UNH, CSUMB, National Geographic, DeLorme, NAVTEQ, and Esri',
+                maxNativeZoom:10,
+                maxZoom:13
+            });
+        }
 
-    var Esri_WorldGrayCanvas = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}', {
-        attribution: 'Tiles &copy; Esri &mdash; Esri, DeLorme, NAVTEQ',
-        maxNativeZoom:13
-    });
-    basemaps["Esri Dark Grey"] = Esri_WorldGrayCanvas;
+        if (maplist.indexOf("EsriDG")!==-1) {
+            basemaps[layerlookup["EsriDG"]] = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}', {
+                attribution: 'Tiles &copy; Esri &mdash; Esri, DeLorme, NAVTEQ',
+                maxNativeZoom:16,
+                maxZoom:18
+            });
+        }
 
-    // var OpenMapSurfer_Roads = L.tileLayer('https://korona.geog.uni-heidelberg.de/tiles/roads/x={x}&y={y}&z={z}', {
-    //     maxZoom: 18,
-    //     attribution: 'Imagery from <a href="https://giscience.uni-hd.de/">University of Heidelberg</a> &mdash; Map data &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
-    // });
-    // basemaps["Mapsurfer"] = OpenMapSurfer_Roads;
+        if (maplist.indexOf("NatGeo")!==-1) {
+            basemaps[layerlookup["NatGeo"]] = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/NatGeo_World_Map/MapServer/tile/{z}/{y}/{x}', {
+                attribution: 'Tiles &copy; Esri',
+                maxNativeZoom:12
+            });
+        }
 
-    // var MapQuestOpen_OSM = L.tileLayer('https://otile{s}.mqcdn.com/tiles/1.0.0/{type}/{z}/{x}/{y}.{ext}', {
-    //     type: 'map',
-    //     ext: 'jpg',
-    //     attribution: 'Tiles Courtesy of <a href="https://www.mapquest.com/">MapQuest</a> &mdash; Map data &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
-    //     subdomains: '1234',
-    //     maxNativeZoom: 17
-    // });
-    //basemaps["MapQuest OSM"] = MapQuestOpen_OSM;
+        if (maplist.indexOf("UKOS")!==-1) {
+            basemaps[layerlookup["UKOS"]] = L.tileLayer('https://geo.nls.uk/maps/opendata/{z}/{x}/{y}.png', {
+                attribution: '<a href="https://geo.nls.uk/maps/">National Library of Scotland Historic Maps</a>',
+                bounds: [[49.6, -12], [61.7, 3]],
+                minZoom:1, maxNativeZoom:17, maxZoom:20,
+                subdomains: '0123'
+            });
+        }
 
-    var Esri_NatGeoWorldMap = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/NatGeo_World_Map/MapServer/tile/{z}/{y}/{x}', {
-        attribution: 'Tiles &copy; Esri',
-        maxNativeZoom:12
-    });
-    basemaps["Nat Geo"] = Esri_NatGeoWorldMap;
+        if (maplist.indexOf("OpTop")!==-1) {
+            basemaps[layerlookup["OpTop"]] = L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', {
+                subdomains: 'abc',
+                maxZoom: 19,
+                attribution: '&copy; <a href="https://www.opentopomap.org/copyright">OpenTopoMap</a> contributors'
+            });
+        }
 
-    var NLS_OS_opendata = L.tileLayer('https://geo.nls.uk/maps/opendata/{z}/{x}/{y}.png', {
-        attribution: '<a href="https://geo.nls.uk/maps/">National Library of Scotland Historic Maps</a>',
-        bounds: [[49.6, -12], [61.7, 3]],
-        minZoom:1, maxNativeZoom:18, maxZoom:18,
-        subdomains: '0123'
-    });
-    basemaps["UK OS Opendata"] = NLS_OS_opendata;
+        if (maplist.indexOf("HB")!==-1) {
+            basemaps[layerlookup["HB"]] = L.tileLayer('https://tiles.wmflabs.org/hikebike/{z}/{x}/{y}.png', {
+                maxZoom: 19,
+                attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+            });
+        }
 
-    var Open_Topo_Map = L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', {
-        subdomains: 'abc',
-        maxZoom: 19,
-        attribution: '&copy; <a href="https://www.opentopomap.org/copyright">OpenTopoMap</a> contributors'
-    });
-    basemaps["Open Topo Map"] = Open_Topo_Map;
+        if (maplist.indexOf("AN")!==-1) {
+            basemaps["AutoNavi"] = L.tileLayer('https://webrd01.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}', {
+                attribution: 'Tiles &copy; 高德地图',
+                maxNativeZoom:14,
+                maxZoom: 19,
+            });
+        }
 
-    var HikeBike_HikeBike = L.tileLayer('https://tiles.wmflabs.org/hikebike/{z}/{x}/{y}.png', {
-        maxZoom: 19,
-        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
-    });
-    basemaps["Hike Bike"] = HikeBike_HikeBike;
+        if (maplist.indexOf("OS45")!==-1) {
+            basemaps[layerlookup["OS45"]] = L.tileLayer( 'https://nls-{s}.tileserver.com/nls/{z}/{x}/{y}.jpg', {
+                attribution: 'Historical Maps Layer, from <a href="https://maps.nls.uk/projects/api/">NLS Maps</a>',
+                bounds: [[49.6, -12], [61.7, 3]],
+                minZoom:1, maxZoom:18,
+                subdomains: '0123'
+            });
+        }
 
-    var NLS_OS_1919_1947 = L.tileLayer( 'https://nls-{s}.tileserver.com/nls/{z}/{x}/{y}.jpg', {
-        attribution: 'Historical Maps Layer, from <a href="https://maps.nls.uk/projects/api/">NLS Maps</a>',
-        bounds: [[49.6, -12], [61.7, 3]],
-        minZoom:1, maxZoom:18,
-        subdomains: '0123'
-    });
-    basemaps["UK OS 1919-47"] = NLS_OS_1919_1947;
+        if (maplist.indexOf("OS00")!==-1) {
+            //var NLS_OS_1900 = L.tileLayer('https://nls-{s}.tileserver.com/NLS_API/{z}/{x}/{y}.jpg', {
+                basemaps[layerlookup["OS00"]] = L.tileLayer('https://nls-{s}.tileserver.com/fpsUZbzrfb5d/{z}/{x}/{y}.jpg', {
+                attribution: '<a href="https://geo.nls.uk/maps/">National Library of Scotland Historic Maps</a>',
+                bounds: [[49.6, -12], [61.7, 3]],
+                minZoom:1, maxNativeZoom:19, maxZoom:20,
+                subdomains: '0123'
+            });
+        }
 
-    //var NLS_OS_1900 = L.tileLayer('https://nls-{s}.tileserver.com/NLS_API/{z}/{x}/{y}.jpg', {
-    var NLS_OS_1900 = L.tileLayer('https://nls-{s}.tileserver.com/fpsUZbzrfb5d/{z}/{x}/{y}.jpg', {
-        attribution: '<a href="https://geo.nls.uk/maps/">National Library of Scotland Historic Maps</a>',
-        bounds: [[49.6, -12], [61.7, 3]],
-        minZoom:1, maxNativeZoom:19, maxZoom:20,
-        subdomains: '0123'
-    });
-    basemaps["UK OS 1900"] = NLS_OS_1900;
+        // Nice terrain based maps by Stamen Design
+        if (maplist.indexOf("ST")!==-1) {
+            var terrainUrl = "https://stamen-tiles-{s}.a.ssl.fastly.net/terrain/{z}/{x}/{y}.jpg";
+            basemaps[layerlookup["ST"]] = L.tileLayer(terrainUrl, {
+                subdomains: ['a','b','c','d'],
+                minZoom: 0,
+                maxZoom: 20,
+                type: 'jpg',
+                attribution: 'Map tiles by <a href="https://stamen.com">Stamen Design</a>, under <a href="https://creativecommons.org/licenses/by/3.0">CC BY 3.0</a>. Data by <a href="https://openstreetmap.org">OpenStreetMap</a>, under <a href="https://creativecommons.org/licenses/by-sa/3.0">CC BY SA</a>'
+            });
+        }
 
-    //var CartoPos = L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png', {
-    //    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors, &copy; <a href="https://cartodb.com/attributions">CartoDB</a>'
-    //});
-    //basemaps["CartoDB Light"] = CartoPos;
+        // Nice watercolour based maps by Stamen Design
+        if (maplist.indexOf("SW")!==-1) {
+            var watercolorUrl = "https://stamen-tiles-{s}.a.ssl.fastly.net/watercolor/{z}/{x}/{y}.jpg";
+            basemaps[layerlookup["SW"]] = L.tileLayer(watercolorUrl, {
+                subdomains: ['a','b','c','d'],
+                minZoom: 0,
+                maxZoom: 20,
+                type: 'jpg',
+                attribution: 'Map tiles by <a href="https://stamen.com">Stamen Design</a>, under <a href="https://creativecommons.org/licenses/by/3.0">CC BY 3.0</a>. Data by <a href="https://openstreetmap.org">OpenStreetMap</a>, under <a href="https://creativecommons.org/licenses/by-sa/3.0">CC BY SA</a>'
+            });
+        }
 
-    // Nice terrain based maps by Stamen Design
-    var terrainUrl = "https://stamen-tiles-{s}.a.ssl.fastly.net/terrain/{z}/{x}/{y}.jpg";
-    basemaps["Terrain"] = L.tileLayer(terrainUrl, {
-        subdomains: ['a','b','c','d'],
-        minZoom: 0,
-        maxZoom: 20,
-        type: 'jpg',
-        attribution: 'Map tiles by <a href="https://stamen.com">Stamen Design</a>, under <a href="https://creativecommons.org/licenses/by/3.0">CC BY 3.0</a>. Data by <a href="https://openstreetmap.org">OpenStreetMap</a>, under <a href="https://creativecommons.org/licenses/by-sa/3.0">CC BY SA</a>'
-    });
-
-    // Nice watercolour based maps by Stamen Design
-    var watercolorUrl = "https://stamen-tiles-{s}.a.ssl.fastly.net/watercolor/{z}/{x}/{y}.jpg";
-    basemaps["Watercolor"] = L.tileLayer(watercolorUrl, {
-        subdomains: ['a','b','c','d'],
-        minZoom: 0,
-        maxZoom: 20,
-        type: 'jpg',
-        attribution: 'Map tiles by <a href="https://stamen.com">Stamen Design</a>, under <a href="https://creativecommons.org/licenses/by/3.0">CC BY 3.0</a>. Data by <a href="https://openstreetmap.org">OpenStreetMap</a>, under <a href="https://creativecommons.org/licenses/by-sa/3.0">CC BY SA</a>'
-    });
+        if (first) {
+            if (layerlookup[first]) { basemaps[layerlookup[first]].addTo(map); }
+            else { basemaps[first].addTo(map); }
+        }
+        else {
+            basemaps[Object.keys(basemaps)[0]].addTo(map);
+        }
+        if (showLayerMenu) {
+            map.removeControl(layercontrol);
+            layercontrol = L.control.layers(basemaps, overlays).addTo(map);
+        }
+    }
 }
 
 
 // Now add the overlays
+var addOverlays = function(overlist) {
+    //console.log("OVERLAYS",overlist)
+    // var overlookup = { DR:"Drawing", CO:"Countries", DN:"Day/Night", BU:"Buildings", SN:"Ship Navigaion", HM:"Heatmap", AC:"Air corridors", TL:"Place labels" };
+    // "DR,CO,DN,BU,SN,HM"
 
-// Add the drawing layer for fun...
-layers["_drawing"] = new L.FeatureGroup();
-overlays["drawing"] = layers["_drawing"];
-map.options.drawControlTooltips = false;
-var drawCount = 0;
-var drawControl = new L.Control.Draw({
-    draw: {
-        polyline: { shapeOptions: { clickable:true } },
-        marker: false,
-        //circle: false,
-        circle: { shapeOptions: { clickable:true } },
-        circlemarker: false,
-        rectangle: { shapeOptions: { clickable:true } },
-        polygon: { shapeOptions: { clickable:true } }
-    }
-    //edit: none
-    // {
-    //     featureGroup: layers["_drawing"],
-    //     remove: true,
-    //     edit: true
-    // }
-});
-var changeDrawColour = function(col) {
-    drawControl.setDrawingOptions({
-        polyline: { shapeOptions: { color:col } },
-        circle: { shapeOptions: { color:col } },
-        rectangle: { shapeOptions: { color:col } },
-        polygon: { shapeOptions: { color:col } }
-    });
-}
-var shape;
-map.on('draw:created', function (e) {
-    var name = e.layerType + drawCount;
-    drawCount = drawCount + 1;
-
-    e.layer.on('contextmenu', function(e) {
-        L.DomEvent.stopPropagation(e);
-        var rmen = L.popup({offset:[0,-12]}).setLatLng(e.latlng);
-        rmen.setContent("<input type='text' autofocus value='"+e.target.name+"' id='dinput' placeholder='name (,icon, layer)'/><br/><button onclick='editPoly(\""+e.target.name+"\",true);'>Edit points</button><button onclick='delMarker(\""+e.target.name+"\",true);'>Delete</button><button onclick='sendDrawing();'>OK</button>");
-        map.openPopup(rmen);
-    });
-
-    var la, lo, cent;
-    if (e.layer.hasOwnProperty("_latlng")) {
-        la = e.layer._latlng.lat;
-        lo = e.layer._latlng.lng;
-        cent = e.layer._latlng;
-    }
-    else {
-        cent = e.layer.getBounds().getCenter();
-    }
-    var m = {action:"draw", name:name, layer:"_drawing", options:e.layer.options, radius:e.layer._mRadius, lat:la, lon:lo};
-    if (e.layer.hasOwnProperty("_latlngs")) {
-        if (e.layer.options.fill === false) { m.line = e.layer._latlngs; }
-        else { m.area = e.layer._latlngs[0]; }
-    }
-
-    shape = {m:m, layer:e.layer};
-    polygons[name] = shape.layer;
-    polygons[name].lay = "_drawing";
-    polygons[name].name = name;
-    layers["_drawing"].addLayer(shape.layer);
-
-    var rightmenuMarker = L.popup({offset:[0,-12]}).setContent("<input type='text' autofocus value='"+name+"' id='dinput' placeholder='name (,icon, layer)'/><br/><button onclick='editPoly(\""+name+"\",true);'>Edit points</button><button onclick='delMarker(\""+name+"\",true);'>Delete</button><button onclick='sendDrawing(\""+name+"\");'>OK</button>");
-    if (e.layer.options.fill === false && navigator.onLine) {
-        rightmenuMarker = L.popup({offset:[0,-12]}).setContent("<input type='text' autofocus value='"+name+"' id='dinput' placeholder='name (,icon, layer)'/><br/><button onclick='editPoly(\""+name+"\",true);'>Edit points</button><button onclick='delMarker(\""+name+"\",true);'>Delete</button><button onclick='sendRoute(\""+name+"\");'>Route</button><button onclick='sendDrawing(\""+name+"\");'>OK</button>");
-    }
-    rightmenuMarker.setLatLng(cent);
-    setTimeout(function() {map.openPopup(rightmenuMarker)},25);
-});
-
-
-var defaultOptions = function () {
-    var options = {};
-    options.precision =  5;
-    options.factor = Math.pow(10, options.precision);
-    options.dimension = 2;
-    return options;
-};
-
-var decode = function (encoded, options) {
-    options = defaultOptions(options);
-    var flatPoints = decodeDeltas(encoded);
-    var points = [];
-    for (var i = 0, len = flatPoints.length; i + (options.dimension - 1) < len;) {
-        var point = [];
-        for (var dim = 0; dim < options.dimension; ++dim) {
-            point.push(flatPoints[i++]);
-        }
-        points.push(point);
-    }
-    return points;
-}
-
-var decodeDeltas = function (encoded, options) {
-    options = defaultOptions(options);
-    var lastNumbers = [];
-    var numbers = decodeFloats(encoded, options);
-    for (var i = 0, len = numbers.length; i < len;) {
-        for (var d = 0; d < options.dimension; ++d, ++i) {
-            numbers[i] = Math.round((lastNumbers[d] = numbers[i] + (lastNumbers[d] || 0)) * options.factor) / options.factor;
-        }
-    }
-    return numbers;
-}
-
-var decodeFloats = function (encoded, options) {
-    options = defaultOptions(options);
-    var numbers = decodeSignedIntegers(encoded);
-    for (var i = 0, len = numbers.length; i < len; ++i) {
-        numbers[i] /= options.factor;
-    }
-    return numbers;
-}
-
-var decodeSignedIntegers = function (encoded) {
-    var numbers = decodeUnsignedIntegers(encoded);
-    for (var i = 0, len = numbers.length; i < len; ++i) {
-        var num = numbers[i];
-        numbers[i] = (num & 1) ? ~(num >> 1) : (num >> 1);
-    }
-    return numbers;
-}
-
-var decodeUnsignedIntegers = function (encoded) {
-    var numbers = [];
-    var current = 0;
-    var shift = 0;
-    for (var i = 0, len = encoded.length; i < len; ++i) {
-        var b = encoded.charCodeAt(i) - 63;
-        current |= (b & 0x1f) << shift;
-        if (b < 0x20) {
-            numbers.push(current);
-            current = 0;
-            shift = 0;
-        } else {
-            shift += 5;
-        }
-    }
-    return numbers;
-}
-
-var sendRoute = function(n) {
-    var p = (polygons[n]._latlngs.map(function(x) {
-        return x.lng+","+x.lat;
-    })).join(';');
-
-    fetch('https://router.project-osrm.org/route/v1/driving/'+p)
-        .then(response => response.json())
-        .then(data => {
-            if (data.code !== "Ok") { sendDrawing(n); }
-            var r = decode(data.routes[0].geometry).map( x => L.latLng(x[0],x[1]) );
-            polygons[n]._latlngs = r;
-            shape.m.line = r;
-            sendDrawing(n);
+    // Add the drawing layer...
+    if (overlist.indexOf("DR")!==-1) {
+        layers["_drawing"] = new L.FeatureGroup();
+        overlays["drawing"] = layers["_drawing"];
+        map.options.drawControlTooltips = false;
+        var drawCount = 0;
+        drawControl = new L.Control.Draw({
+            draw: {
+                polyline: { shapeOptions: { clickable:true } },
+                marker: false,
+                //circle: false,
+                circle: { shapeOptions: { clickable:true } },
+                circlemarker: false,
+                rectangle: { shapeOptions: { clickable:true } },
+                polygon: { shapeOptions: { clickable:true } }
+            }
+            //edit: none
+            // {
+            //     featureGroup: layers["_drawing"],
+            //     remove: true,
+            //     edit: true
+            // }
         });
-}
+        var changeDrawColour = function(col) {
+            drawControl.setDrawingOptions({
+                polyline: { shapeOptions: { color:col } },
+                circle: { shapeOptions: { color:col } },
+                rectangle: { shapeOptions: { color:col } },
+                polygon: { shapeOptions: { color:col } }
+            });
+        }
+        var shape;
+        map.on('draw:created', function (e) {
+            var name = e.layerType + drawCount;
+            drawCount = drawCount + 1;
 
-var sendDrawing = function(n) {
-    var thing = document.getElementById('dinput').value;
-    map.closePopup();
-    shape.m.name = thing;
-    delMarker(n,true);
+            e.layer.on('contextmenu', function(e) {
+                L.DomEvent.stopPropagation(e);
+                var rmen = L.popup({offset:[0,-12]}).setLatLng(e.latlng);
+                rmen.setContent("<input type='text' autofocus value='"+e.target.name+"' id='dinput' placeholder='name (,icon, layer)'/><br/><button onclick='editPoly(\""+e.target.name+"\",true);'>Edit points</button><button onclick='delMarker(\""+e.target.name+"\",true);'>Delete</button><button onclick='sendDrawing();'>OK</button>");
+                map.openPopup(rmen);
+            });
 
-    polygons[thing] = shape.layer;
-    polygons[thing].lay = "_drawing";
-    polygons[thing].name = thing;
-    layers["_drawing"].addLayer(shape.layer);
-    ws.send(JSON.stringify(shape.m));
-}
+            var la, lo, cent;
+            if (e.layer.hasOwnProperty("_latlng")) {
+                la = e.layer._latlng.lat;
+                lo = e.layer._latlng.lng;
+                cent = e.layer._latlng;
+            }
+            else {
+                cent = e.layer.getBounds().getCenter();
+            }
+            var m = {action:"draw", name:name, layer:"_drawing", options:e.layer.options, radius:e.layer._mRadius, lat:la, lon:lo};
+            if (e.layer.hasOwnProperty("_latlngs")) {
+                if (e.layer.options.fill === false) { m.line = e.layer._latlngs; }
+                else { m.area = e.layer._latlngs[0]; }
+            }
 
-// Add the countries (world-110m) for offline use
-var customTopoLayer = L.geoJson(null, {clickable:false, style: {color:"blue", weight:2, fillColor:"#cf6", fillOpacity:0.04}});
-layers["_countries"] = omnivore.topojson('images/world-50m-flat.json',null,customTopoLayer);
-overlays["countries"] = layers["_countries"];
+            shape = {m:m, layer:e.layer};
+            polygons[name] = shape.layer;
+            polygons[name].lay = "_drawing";
+            polygons[name].name = name;
+            layers["_drawing"].addLayer(shape.layer);
 
-// Add the day/night overlay
-layers["_daynight"] = new L.LayerGroup();
-overlays["day/night"] = layers["_daynight"];
+            var rightmenuMarker = L.popup({offset:[0,-12]}).setContent("<input type='text' autofocus value='"+name+"' id='dinput' placeholder='name (,icon, layer)'/><br/><button onclick='editPoly(\""+name+"\",true);'>Edit points</button><button onclick='delMarker(\""+name+"\",true);'>Delete</button><button onclick='sendDrawing(\""+name+"\");'>OK</button>");
+            if (e.layer.options.fill === false && navigator.onLine) {
+                rightmenuMarker = L.popup({offset:[0,-12]}).setContent("<input type='text' autofocus value='"+name+"' id='dinput' placeholder='name (,icon, layer)'/><br/><button onclick='editPoly(\""+name+"\",true);'>Edit points</button><button onclick='delMarker(\""+name+"\",true);'>Delete</button><button onclick='sendRoute(\""+name+"\");'>Route</button><button onclick='sendDrawing(\""+name+"\");'>OK</button>");
+            }
+            rightmenuMarker.setLatLng(cent);
+            setTimeout(function() {map.openPopup(rightmenuMarker)},25);
+        });
 
-// Add live rain data
-if (navigator.onLine) {
-    overlays["rainfall"] = new L.TileLayer('https://tilecache.rainviewer.com/v2/radar/' + parseInt(Date.now()/600000)*600 + '/256/{z}/{x}/{y}/2/1_1.png', {
-        tileSize: 256,
-        opacity: 0.4,
-        transparent: true,
-        attribution: '<a href="https://rainviewer.com" target="_blank">rainviewer.com</a>'
-    });
+        sendDrawing = function(n) {
+            var thing = document.getElementById('dinput').value;
+            map.closePopup();
+            shape.m.name = thing;
+            delMarker(n,true);
+
+            polygons[thing] = shape.layer;
+            polygons[thing].lay = "_drawing";
+            polygons[thing].name = thing;
+            layers["_drawing"].addLayer(shape.layer);
+            ws.send(JSON.stringify(shape.m));
+        }
+
+        var defaultOptions = function () {
+            var options = {};
+            options.precision =  5;
+            options.factor = Math.pow(10, options.precision);
+            options.dimension = 2;
+            return options;
+        };
+
+        var decode = function (encoded, options) {
+            options = defaultOptions(options);
+            var flatPoints = decodeDeltas(encoded);
+            var points = [];
+            for (var i = 0, len = flatPoints.length; i + (options.dimension - 1) < len;) {
+                var point = [];
+                for (var dim = 0; dim < options.dimension; ++dim) {
+                    point.push(flatPoints[i++]);
+                }
+                points.push(point);
+            }
+            return points;
+        }
+
+        var decodeDeltas = function (encoded, options) {
+            options = defaultOptions(options);
+            var lastNumbers = [];
+            var numbers = decodeFloats(encoded, options);
+            for (var i = 0, len = numbers.length; i < len;) {
+                for (var d = 0; d < options.dimension; ++d, ++i) {
+                    numbers[i] = Math.round((lastNumbers[d] = numbers[i] + (lastNumbers[d] || 0)) * options.factor) / options.factor;
+                }
+            }
+            return numbers;
+        }
+
+        var decodeFloats = function (encoded, options) {
+            options = defaultOptions(options);
+            var numbers = decodeSignedIntegers(encoded);
+            for (var i = 0, len = numbers.length; i < len; ++i) {
+                numbers[i] /= options.factor;
+            }
+            return numbers;
+        }
+
+        var decodeSignedIntegers = function (encoded) {
+            var numbers = decodeUnsignedIntegers(encoded);
+            for (var i = 0, len = numbers.length; i < len; ++i) {
+                var num = numbers[i];
+                numbers[i] = (num & 1) ? ~(num >> 1) : (num >> 1);
+            }
+            return numbers;
+        }
+
+        var decodeUnsignedIntegers = function (encoded) {
+            var numbers = [];
+            var current = 0;
+            var shift = 0;
+            for (var i = 0, len = encoded.length; i < len; ++i) {
+                var b = encoded.charCodeAt(i) - 63;
+                current |= (b & 0x1f) << shift;
+                if (b < 0x20) {
+                    numbers.push(current);
+                    current = 0;
+                    shift = 0;
+                } else {
+                    shift += 5;
+                }
+            }
+            return numbers;
+        }
+
+        sendRoute = function(n) {
+            var p = (polygons[n]._latlngs.map(function(x) {
+                return x.lng+","+x.lat;
+            })).join(';');
+
+            fetch('https://router.project-osrm.org/route/v1/driving/'+p)
+                .then(response => response.json())
+                .then(data => {
+                    if (data.code !== "Ok") { sendDrawing(n); }
+                    var r = decode(data.routes[0].geometry).map( x => L.latLng(x[0],x[1]) );
+                    polygons[n]._latlngs = r;
+                    shape.m.line = r;
+                    sendDrawing(n);
+                });
+        }
+
+    }
+
+    // Add the countries (world-110m) for offline use
+    if (overlist.indexOf("CO")!==-1 || (!navigator.onLine)) {
+        var customTopoLayer = L.geoJson(null, {clickable:false, style: {color:"blue", weight:2, fillColor:"#cf6", fillOpacity:0.04}});
+        layers["_countries"] = omnivore.topojson('images/world-50m-flat.json',null,customTopoLayer);
+        overlays["countries"] = layers["_countries"];
+    }
+
+    // Add the day/night overlay
+    if (overlist.indexOf("DN")!==-1) {
+        layers["_daynight"] = new L.LayerGroup();
+        overlays["day/night"] = layers["_daynight"];
+    }
+
+    // Add live rain data
+    if (overlist.indexOf("RA")!==-1) {
+        if (navigator.onLine) {
+            overlays["rainfall"] = new L.TileLayer('https://tilecache.rainviewer.com/v2/radar/' + parseInt(Date.now()/600000)*600 + '/256/{z}/{x}/{y}/2/1_1.png', {
+                tileSize: 256,
+                opacity: 0.4,
+                transparent: true,
+                attribution: '<a href="https://rainviewer.com" target="_blank">rainviewer.com</a>'
+            });
+        }
+    }
 
     // Add the buildings layer
-    // overlays["buildings"] = new OSMBuildings(map).load();
-    // map.removeLayer(overlays["buildings"]);     // Hide it at start
+    if (overlist.indexOf("BU")!==-1) {
+        overlays["buildings"] = new OSMBuildings(map).load();
+        // map.removeLayer(overlays["buildings"]);     // Hide it at start
+    }
 
-    // Add Roads
-    // overlays["roads"] = L.tileLayer('https://{s}.tile.openstreetmap.se/hydda/roads_and_labels/{z}/{x}/{y}.png', {
-    //     maxZoom: 18,
-    //     attribution: 'Tiles courtesy of <a href="https://openstreetmap.se/" target="_blank">OpenStreetMap Sweden</a> &mdash; Map data &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
-    //     opacity: 0.8
-    // });
+    // Add Railways
+    if (overlist.indexOf("RW")!==-1) {
+        // eg https://a.tiles.openrailwaymap.org/standard/11/1015/686.png
+        overlays["railways"] = L.tileLayer('https://{s}.tiles.openrailwaymap.org/standard/{z}/{x}/{y}.png', {
+            maxZoom: 19,
+            attribution: 'Map data: &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> | Map style: &copy; <a href="https://www.OpenRailwayMap.org">OpenRailwayMap</a> (<a href="https://creativecommons.org/licenses/by-sa/3.0/">CC-BY-SA</a>)'
+        });
+    }
 
-    // // Add Railways
-    // overlays["railways"] = L.tileLayer('https://{s}.tiles.openrailwaymap.org/standard/{z}/{x}/{y}.png', {
-    //     maxZoom: 19,
-    //     attribution: 'Map data: &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> | Map style: &copy; <a href="https://www.OpenRailwayMap.org">OpenRailwayMap</a> (<a href="https://creativecommons.org/licenses/by-sa/3.0/">CC-BY-SA</a>)'
-    // });
-
-    // // Add Public Transport (Buses)
-    // overlays["public transport"] = L.tileLayer('https://openptmap.org/tiles/{z}/{x}/{y}.png', {
-    //     maxZoom: 17,
-    //     attribution: 'Map data: &copy; <a href="https://www.openptmap.org">OpenPtMap</a> contributors'
-    // });
+    // Add Air Corridors
+    if (overlist.indexOf("AC")!==-1) {
+        overlays["air corridors"] = L.tileLayer('https://{s}.tile.maps.openaip.net/geowebcache/service/tms/1.0.0/openaip_basemap@EPSG%3A900913@png/{z}/{x}/{y}.{ext}', {
+            attribution: '<a href="https://www.openaip.net/">openAIP Data</a> (<a href="https://creativecommons.org/licenses/by-sa/3.0/">CC-BY-NC-SA</a>)',
+            ext: 'png',
+            minZoom: 4,
+            maxZoom: 15,
+            maxNativeZoom: 14,
+            tms: true,
+            detectRetina: true,
+            subdomains: '12'
+        });
+    }
 
     // Add the OpenSea markers layer
-    overlays["ship nav"] = L.tileLayer('https://tiles.openseamap.org/seamark/{z}/{x}/{y}.png', {
-        maxZoom: 19,
-        attribution: 'Map data: &copy; <a href="https://www.openseamap.org">OpenSeaMap</a> contributors'
-    });
-}
+    if (overlist.indexOf("SN")!==-1) {
+        overlays["ship navigation"] = L.tileLayer('https://tiles.openseamap.org/seamark/{z}/{x}/{y}.png', {
+            maxZoom: 19,
+            attribution: 'Map data: &copy; <a href="https://www.openseamap.org">OpenSeaMap</a> contributors'
+        });
+    }
 
-// Add the heatmap layer
-var heat = L.heatLayer([], {radius:60, gradient:{0.2:'blue', 0.4:'lime', 0.6:'red', 0.8:'yellow', 1:'white'}});
-layers["_heat"] = new L.LayerGroup().addLayer(heat);
-overlays["heatmap"] = layers["_heat"];
+    // Add the Stamen Toner Labels layer
+    if (overlist.indexOf("TL")!==-1) {
+        overlays["place labels"] = L.tileLayer('https://stamen-tiles-{s}.a.ssl.fastly.net/toner-labels/{z}/{x}/{y}{r}.{ext}', {
+            attribution: 'Map tiles by <a href="http://stamen.com">Stamen Design</a>, <a href="http://creativecommons.org/licenses/by/3.0">CC BY 3.0</a> &mdash; Map data &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+            subdomains: 'abcd',
+            minZoom: 0,
+            maxZoom: 20,
+            ext: 'png'
+        });
+    }
 
-if (showUserMenu) {
-    if ( window.localStorage.hasOwnProperty("lastlayer") ) {
-        if ( basemaps[window.localStorage.getItem("lastlayer")] ) {
-            baselayername = window.localStorage.getItem("lastlayer");
-        }
+    // Add the heatmap layer
+    if (overlist.indexOf("HM")!==-1) {
+        heat = L.heatLayer([], {radius:60, gradient:{0.2:'blue', 0.4:'lime', 0.6:'red', 0.8:'yellow', 1:'white'}});
+        layers["_heat"] = new L.LayerGroup().addLayer(heat);
+        overlays["heatmap"] = layers["_heat"];
+    }
+
+    if (showLayerMenu) {
+        map.removeControl(layercontrol);
+        layercontrol = L.control.layers(basemaps, overlays).addTo(map);
     }
 }
-if (navigator.onLine) { basemaps[baselayername].addTo(map); }
 
 // Layer control based on select box rather than radio buttons.
 //var layercontrol = L.control.selectLayers(basemaps, overlays).addTo(map);
-layercontrol = L.control.layers(basemaps, overlays);
+var layercontrol = L.control.layers(basemaps, overlays);
 
 // Add the layers control widget
 if (!inIframe) { layercontrol.addTo(map); }
@@ -1269,7 +1340,7 @@ function setMarker(data) {
     }
 
     // console.log("DATA", typeof data, data);
-    if (data.deleted) { // remove markers we are told to
+    if (data.deleted == true) { // remove markers we are told to
         delMarker(data.name);
         return;
     }
@@ -1280,12 +1351,15 @@ function setMarker(data) {
     opt.color = data.color || data.lineColor || "#910000";
     opt.fillColor = data.fillColor || "#910000";
     opt.stroke = (data.hasOwnProperty("stroke")) ? data.stroke : true;
-    opt.weight = data.weight || 2;
-    opt.opacity = data.opacity || 1;
-    opt.fillOpacity = data.fillOpacity || 0.2;
+    opt.weight = data.weight;
+    opt.opacity = data.opacity;
+    opt.fillOpacity = data.fillOpacity;
     opt.clickable = (data.hasOwnProperty("clickable")) ? data.clickable : false;
     opt.fill = (data.hasOwnProperty("fill")) ? data.fill : true;
     if (data.hasOwnProperty("dashArray")) { opt.dashArray = data.dashArray; }
+    if (opt.fillOpacity === undefined) { opt.fillOpacity = 0.2; }
+    if (opt.opacity === undefined) { opt.opacity = 1; }
+    if (opt.weight === undefined) { opt.weight = 2; }
 
     // Replace building
     if (data.hasOwnProperty("building")) {
@@ -1354,12 +1428,18 @@ function setMarker(data) {
         if (!data.hasOwnProperty("opacity")) { opt.opacity = 0.8; }
         var polyln = L.polyline(data.line, opt);
         polygons[data.name] = rightmenu(polyln);
+        if (data.hasOwnProperty("fit") && data.fit === true) {
+            map.fitBounds(polygons[data.name].getBounds(),{padding:[50,50]})
+        }
     }
     else if (data.hasOwnProperty("area") && Array.isArray(data.area)) {
         var polyarea;
         if (data.area.length === 2) { polyarea = L.rectangle(data.area, opt); }
         else { polyarea = L.polygon(data.area, opt); }
         polygons[data.name] = rightmenu(polyarea);
+        if (data.hasOwnProperty("fit") && data.fit === true) {
+            map.fitBounds(polygons[data.name].getBounds(),{padding:[50,50]})
+        }
     }
     else if (data.hasOwnProperty("sdlat") && data.hasOwnProperty("sdlon")) {
         if (!data.hasOwnProperty("iconColor")) { opt.color = "blue"; }     //different standard Color Settings
@@ -1417,6 +1497,13 @@ function setMarker(data) {
     else {
         // console.log("No location:",data);
         return;
+    }
+
+    if (ll.lat === 0 && ll.lng === 0) {
+        // Add a little wobble so we can zoom into each if required.
+        console.log(data.name,"is at null island.");
+        ll.lat = Math.round(1000000 * ll.lat + Math.random() * 10000 - 5000) / 1000000;
+        ll.lng = Math.round(1000000 * ll.lng + Math.random() * 10000 - 5000) / 1000000;
     }
 
     // Adding new L.LatLng object (lli) when optional intensity value is defined. Only for use in heatmap layer
@@ -1715,8 +1802,9 @@ function setMarker(data) {
         opts.size = opts.size || sz;
         opts.size = opts.size * (opts.scale || 1);
         // escape out any isocodes eg flag symbols
-        var optfields = ["additionalInformation","higherFormation","specialHeadquarters","staffComments","type","uniqueDesignation","speed"];
-        const regex = /\p{Extended_Pictographic}/ug;
+        var optfields = ["additionalInformation","higherFormation","specialHeadquarters","staffComments","type","uniqueDesignation","speed","country"];
+        //const regex = /\p{Extended_Pictographic}/ug;
+        const regex = /(\u00a9|\u00ae|[\u2000-\u3300]|\ud83c[\ud000-\udfff]|\ud83d[\ud000-\udfff]|\ud83e[\ud000-\udfff])/gi;
         optfields.forEach(function (item) {
             if (opts.hasOwnProperty(item) && regex.test(opts[item])) {
                 opts[item] = unescape(encodeURIComponent(opts[item]));
@@ -1764,19 +1852,13 @@ function setMarker(data) {
             var b = marker.getPopup().getContent().split("heading : ");
             if (b.length === 2) { b = parseFloat(b[1].split("<br")[0]); }
             else { b = undefined; }
-            ws.send(JSON.stringify({
-                action:"move",
-                name:marker.name,
-                layer:marker.lay,
-                lat:parseFloat(marker.getLatLng().lat.toFixed(6)),
-                lon:parseFloat(marker.getLatLng().lng.toFixed(6)),
-                hdg:b,
-                icon:marker.icon,
-                iconColor:marker.iconColor,
-                SIDC:marker.SIDC,
-                draggable:true,
-                from:oldll
-            }));
+
+            var fb = allData[marker.name];
+            fb.action = "move";
+            fb.lat = parseFloat(marker.getLatLng().lat.toFixed(6));
+            fb.lon = parseFloat(marker.getLatLng().lng.toFixed(6));
+            fb.from = oldll;
+            ws.send(JSON.stringify(fb));
         });
     }
 
@@ -1785,13 +1867,13 @@ function setMarker(data) {
         var reft = new RegExp('feet|ft','i');
         var refm = new RegExp('metres|m','i');
         if ( reft.test(""+data.alt) ) {
-            data.alt = (parseFloat(data.alt)).toFixed(2) + " ft";
+            data.alt = +(parseFloat(data.alt)).toFixed(2) + " ft";
         }
         else if ( refm.test(""+data.alt) ) {
-            data.alt = (parseFloat(data.alt)).toFixed(2) + " m";
+            data.alt = +(parseFloat(data.alt)).toFixed(2) + " m";
         }
         else {
-            data.alt = (parseFloat(data.alt)).toFixed(2);
+            data.alt = +(parseFloat(data.alt)).toFixed(2);
         }
     }
 
@@ -1808,7 +1890,7 @@ function setMarker(data) {
         delete data.photoUrl;
     }
     if (data.hasOwnProperty("videoUrl")) {
-        words += '<video controls muted autoplay width="320" height="240"><source src="'+data.videoUrl+'" type="video/mp4">Your browser does not support the video tag.</video>';
+        words += '<video controls muted autoplay width="320" height="240"><source src="'+data.videoUrl+'" type="video/mp4">Your browser does not support the video tag.</video><br/>';
         delete data.videoUrl;
     }
     if (data.hasOwnProperty("ttl")) {  // save expiry time for this marker
@@ -1887,7 +1969,7 @@ function setMarker(data) {
     if (data.dashArray) { delete data.dashArray; }
     if (data.fill) { delete data.fill; }
     if (data.draggable) { delete data.draggable; }
-    if (!isNaN(data.speed)) { data.speed = data.speed.toFixed(2); }
+    //if (!isNaN(data.speed)) { data.speed = data.speed.toFixed(2); }
     if (data.hasOwnProperty("clickable")) { delete data.clickable; }
     if (data.hasOwnProperty("fillColor")) { delete data.fillColor; }
     if (data.hasOwnProperty("radius")) { delete data.radius; }
@@ -1910,9 +1992,12 @@ function setMarker(data) {
     marker.lay = lay;                       // and the layer it is on
 
     marker.on('click', function(e) {
-        ws.send(JSON.stringify({action:"click",name:marker.name,layer:marker.lay,icon:marker.icon,iconColor:marker.iconColor,SIDC:marker.SIDC,draggable:true,lat:parseFloat(marker.getLatLng().lat.toFixed(6)),lon:parseFloat(marker.getLatLng().lng.toFixed(6))}));
+        //ws.send(JSON.stringify({action:"click",name:marker.name,layer:marker.lay,icon:marker.icon,iconColor:marker.iconColor,SIDC:marker.SIDC,draggable:true,lat:parseFloat(marker.getLatLng().lat.toFixed(6)),lon:parseFloat(marker.getLatLng().lng.toFixed(6))}));
+        var fb = allData[marker.name];
+        fb.action = "click";
+        ws.send(JSON.stringify(fb));
     });
-    if ((data.addtoheatmap !== "false") || (!data.hasOwnProperty("addtoheatmap"))) { // Added to give ability to control if points from active layer contribute to heatmap
+    if (heat && ((data.addtoheatmap != false) || (!data.hasOwnProperty("addtoheatmap")))) { // Added to give ability to control if points from active layer contribute to heatmap
         if (heatAll || map.hasLayer(layers[lay])) { heat.addLatLng(lli); }
     }
     markers[data.name] = marker;
@@ -1923,7 +2008,7 @@ function setMarker(data) {
     else if (data.heading !== undefined) { track = data.heading; }
     else if (data.bearing !== undefined) { track = data.bearing; }
     if (track != undefined) {  // if there is a heading
-        if (data.speed != null && !data.length) {  // and a speed - lets convert to a leader length
+        if (data.speed != null && data.length === undefined) {  // and a speed - lets convert to a leader length
             data.length = parseFloat(data.speed || "0") * 60;
             var re1 = new RegExp('kn|knot|kt','i');
             var re2 = new RegExp('kph|kmh','i');
@@ -1932,7 +2017,7 @@ function setMarker(data) {
             else if ( re2.test(""+data.speed) ) { data.length = data.length * 0.44704; }
             else if ( re3.test(""+data.speed) ) { data.length = data.length * 0.277778; }
         }
-        if (data.length != null) {
+        if (data.length !== undefined) {
             if (polygons[data.name] != null && !polygons[data.name].hasOwnProperty("_layers")) {
                 map.removeLayer(polygons[data.name]);
             }
@@ -1983,11 +2068,25 @@ function setMarker(data) {
 
 // handle any incoming COMMANDS to control the map remotely
 function doCommand(cmd) {
-    //console.log("COMMAND",cmd);
+    // console.log("COMMAND",cmd);
+    if (cmd.init && cmd.hasOwnProperty("maplist")) {
+        basemaps = [];
+        addBaseMaps(cmd.maplist,cmd.layer);
+    }
+    if (cmd.init && cmd.hasOwnProperty("overlist")) {
+        overlays = [];
+        addOverlays(cmd.overlist);
+    }
     if (cmd.hasOwnProperty("toptitle")) {
         if (!inIframe ) {
             document.title = cmd.toptitle;
             document.getElementById("topwords").innerText = cmd.toptitle;
+        }
+    }
+    if (cmd.hasOwnProperty("toplogo")) {
+        if (!inIframe ) {
+            document.getElementById("toplogo").src = cmd.toplogo;
+            document.getElementById("toplink").setAttribute("style", "pointer-events:none");
         }
     }
     if (cmd.hasOwnProperty("clear")) {
@@ -2110,7 +2209,7 @@ function doCommand(cmd) {
 
     var existsalready = false;
     // Add a new base map layer
-    if (cmd.map && cmd.map.hasOwnProperty("name") && cmd.map.hasOwnProperty("url") && cmd.map.hasOwnProperty("opt")) {
+    if (cmd.map && cmd.map.hasOwnProperty("name") && cmd.map.name.length>0 && cmd.map.hasOwnProperty("url") && cmd.map.hasOwnProperty("opt")) {
         console.log("BASE",cmd.map);
         if (basemaps.hasOwnProperty(cmd.map.name)) { existsalready = true; }
         if (cmd.map.hasOwnProperty("wms")) {   // special case for wms
@@ -2190,7 +2289,8 @@ function doCommand(cmd) {
             return st;
         }};
         opt.onEachFeature = function (f,l) {
-            l.bindPopup('<pre>'+JSON.stringify(f.properties,null,' ').replace(/[\{\}"]/g,'')+'</pre>');
+            var pw = '<pre>'+JSON.stringify(f.properties,null,' ').replace(/[\{\}"]/g,'')+'</pre>';
+            if (pw.length > 11) { l.bindPopup(pw); }
             if (cmd.map.hasOwnProperty("clickable") && cmd.map.clickable === true) {
                 l.on('click', function (e) {
                     ws.send(JSON.stringify({action:"clickgeo",name:cmd.map.overlay,type:f.type,properties:f.properties,geometry:f.geometry}));
@@ -2383,6 +2483,14 @@ function doCommand(cmd) {
                 overlays[cmd.map.overlay] = new L.imageOverlay(cmd.map.url, L.latLngBounds(cmd.map.bounds), cmd.map.opt);
             }
         }
+        else if (cmd.map.url.slice(-4).toLowerCase() === ".pbf") {
+            overlays[cmd.map.overlay] = VectorTileLayer(cmd.map.url, cmd.map.opt);
+        }
+        else if (cmd.map.hasOwnProperty("transparentPixels")) {
+            cmd.map.opt.pixelCodes =  cmd.map.transparentPixels;
+            cmd.map.opt.matchRGBA = [ 0,0,0,0 ];
+            overlays[cmd.map.overlay] = L.tileLayerPixelFilter(cmd.map.url, cmd.map.opt);
+        }
         else {
             overlays[cmd.map.overlay] = L.tileLayer(cmd.map.url, cmd.map.opt);
         }
@@ -2434,6 +2542,8 @@ function doCommand(cmd) {
     // Turn on an existing overlay(s)
     if (cmd.hasOwnProperty("showlayer")) {
         if (typeof cmd.showlayer === "string") { cmd.showlayer = [ cmd.showlayer ]; }
+        var sn = cmd.showlayer.indexOf("ship nav");
+        if (sn !== -1) { cmd.showlayer[sn] = "ship navigation"; }
         for (var i=0; i < cmd.showlayer.length; i++) {
             if (overlays.hasOwnProperty(cmd.showlayer[i])) {
                 map.addLayer(overlays[cmd.showlayer[i]]);
@@ -2443,6 +2553,8 @@ function doCommand(cmd) {
     // Turn off an existing overlay(s)
     if (cmd.hasOwnProperty("hidelayer")) {
         if (typeof cmd.hidelayer === "string") { cmd.hidelayer = [ cmd.hidelayer ]; }
+        var sn = cmd.hidelayer.indexOf("ship nav");
+        if (sn !== -1) { cmd.hidelayer[sn] = "ship navigation"; }
         for (var i=0; i < cmd.hidelayer.length; i++) {
             if (overlays.hasOwnProperty(cmd.hidelayer[i])) {
                 map.removeLayer(overlays[cmd.hidelayer[i]]);
@@ -2497,6 +2609,7 @@ function doCommand(cmd) {
 
 // handle any incoming GEOJSON directly - may style badly
 function doGeojson(n,g,l,o) {
+    //console.log("GEOJSON",n,g,l,o)
     var lay = l || g.name || "unknown";
     // if (!basemaps[lay]) {
     var opt = { style: function(feature) {
@@ -2528,12 +2641,29 @@ function doGeojson(n,g,l,o) {
         return st;
     }}
     opt.pointToLayer = function (feature, latlng) {
-        var myMarker = L.VectorMarkers.icon({
-            icon: feature.properties["marker-symbol"] || "circle",
-            markerColor: (feature.properties["marker-color"] || "#910000"),
-            prefix: 'fa',
-            iconColor: 'white'
-        });
+        var myMarker;
+        if (feature.properties.hasOwnProperty("SIDC")) {
+            myMarker = new ms.Symbol( feature.properties.SIDC.toUpperCase(), {
+                uniqueDesignation:unescape(encodeURIComponent(feature.properties.title)) ,
+                country:feature.properties.country,
+                direction:feature.properties.bearing,
+                additionalInformation:feature.properties.modifier,
+                size:24
+            });
+            myMarker = L.icon({
+                iconUrl: myMarker.toDataURL(),
+                iconAnchor: [myMarker.getAnchor().x, myMarker.getAnchor().y],
+                className: "natoicon",
+            });
+        }
+        else {
+            myMarker = L.VectorMarkers.icon({
+                icon: feature.properties["marker-symbol"] || "circle",
+                markerColor: (feature.properties["marker-color"] || "#910000"),
+                prefix: 'fa',
+                iconColor: 'white'
+            });
+        }
         if (!feature.properties.hasOwnProperty("title")) {
             feature.properties.title = feature.properties["marker-symbol"];
         }
