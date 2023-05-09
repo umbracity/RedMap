@@ -15,6 +15,7 @@ module.exports = function(RED) {
     }
 
     function worldMap(node, n) {
+        var allPoints = {};
         RED.nodes.createNode(node,n);
         node.lat = n.lat || "";
         node.lon = n.lon || "";
@@ -30,6 +31,7 @@ module.exports = function(RED) {
         node.hiderightclick = n.hiderightclick || "false";
         node.coords = n.coords || "none";
         node.showgrid = n.showgrid || "false";
+        node.showruler = n.showruler || "false";
         node.allowFileDrop = n.allowFileDrop || "false";
         node.path = n.path || "/worldmap";
         node.maplist = n.maplist;
@@ -54,6 +56,15 @@ module.exports = function(RED) {
         //node.log("Serving "+__dirname+" as "+node.path);
         node.log("started at "+node.path);
         var clients = {};
+        RED.httpNode.get("/-worldmap3d-key",  RED.auth.needsPermission('worldmap3d.read'), function(req, res) {
+            if (process.env.MAPBOXGL_TOKEN) {
+                res.send({key:process.env.MAPBOXGL_TOKEN});
+            }
+            else {
+                node.error("No API key set");
+                res.send({key:''})
+            }
+        });
         RED.httpNode.use(compression());
         RED.httpNode.use(node.path, express.static(__dirname + '/worldmap'));
         // RED.httpNode.use(node.path, express.static(__dirname + '/worldmap', {maxage:3600000}));
@@ -91,12 +102,16 @@ module.exports = function(RED) {
                     c.zoomlock = node.zoomlock;
                     c.showlayers = node.layers;
                     c.grid = {showgrid:node.showgrid};
+                    c.ruler = {showruler:node.showruler};
                     c.hiderightclick = node.hiderightclick;
                     c.allowFileDrop = node.allowFileDrop;
                     c.coords = node.coords;
                     if (node.name) { c.toptitle = node.name; }
                     //console.log("INIT",c)
                     client.write(JSON.stringify({command:c}));
+                    var o = Object.values(allPoints);
+                    o.map(v => delete v.tout);
+                    setTimeout(function() { client.write(JSON.stringify(o)) }, 250);
                 }
             });
             client.on('close', function() {
@@ -106,6 +121,7 @@ module.exports = function(RED) {
             node.status({fill:"green",shape:"dot",text:"connected "+Object.keys(clients).length,_sessionid:client.id});
         }
         node.on('input', function(msg) {
+            if (!msg.hasOwnProperty("payload")) { node.warn("Missing payload"); return; }
             if (msg.hasOwnProperty("_sessionid")) {
                 if (clients.hasOwnProperty(msg._sessionid)) {
                     clients[msg._sessionid].write(JSON.stringify(msg.payload));
@@ -117,6 +133,12 @@ module.exports = function(RED) {
                         clients[c].write(JSON.stringify(msg.payload));
                     }
                 }
+            }
+            if (msg.payload.hasOwnProperty("name")) {
+                allPoints[msg.payload.name] = RED.util.cloneMessage(msg.payload);
+                var t = node.maxage || 3600;
+                if (msg.payload.ttl && msg.payload.ttl < t) { t = msg.payload.ttl; }
+                allPoints[msg.payload.name].tout = setTimeout( function() { delete allPoints[msg.payload.name] }, t * 1000 );
             }
         });
         node.on("close", function() {
@@ -152,8 +174,9 @@ module.exports = function(RED) {
         if (height == 0) { height = 10; }
         var size = ui.getSizes();
         var frameWidth = (size.sx + size.cx) * width - size.cx;
-        var frameHeight = (size.sy + size.cy) * height - size.cy;
-        var url = encodeURI(config.path);
+        var frameHeight = (size.sy + size.cy) * height - size.cy + 40;
+        var url = encodeURI(path.posix.join(RED.settings.httpNodeRoot||RED.settings.httpRoot,config.path));
+        if (config.layer === "MB3d") { url += "/index3d.html"; }
         var html = `<style>.nr-dashboard-ui_worldmap{padding:0;}</style><div style="overflow:hidden;">
 <iframe src="${url}" width="${frameWidth}px" height="${frameHeight}px" style="border:none;"></iframe></div>`;
         return html;
@@ -525,7 +548,7 @@ module.exports = function(RED) {
     }
     RED.nodes.registerType("worldmap-hull",WorldMapHull);
 
-    RED.httpNode.get("/-ui-worldmap", function(req, res) {
+    RED.httpAdmin.get("/-ui-worldmap",  RED.auth.needsPermission('rpi-ui-worldmap.read'), function(req, res) {
         res.send(ui ? "true": "false");
     });
 }

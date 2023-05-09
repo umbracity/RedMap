@@ -18,7 +18,7 @@ var menuOpen = false;
 var clusterAt = 0;
 var maxage = 900;   // default max age of icons on map in seconds - cleared after 10 mins
 var baselayername = "OSM grey";     // Default base layer OSM but uniform grey
-var ibmfoot = "&nbsp;&copy; IBM 2015,2021"
+var pagefoot = "&nbsp;&copy; DCJ 2022"
 var inIframe = false;
 var showUserMenu = true;
 var showLayerMenu = true;
@@ -30,8 +30,12 @@ var sidebyside;
 var layercontrol;
 var drawControl;
 var drawingColour = "#910000";
-var sendRoute;
 var sendDrawing;
+var colorControl;
+var sendRoute;
+var oldBounds = {ne:{lat:0, lng:0}, sw:{lat:0, lng:0}};
+var edgeLayer = new L.layerGroup();
+var edgeEnabled = true;
 
 var iconSz = {
     "Team/Crew": 24,
@@ -57,7 +61,7 @@ var connect = function() {
     ws.onopen = function() {
         console.log("CONNECTED");
         if (!inIframe) {
-            document.getElementById("footer").innerHTML = "<font color='#494'>"+ibmfoot+"</font>";
+            document.getElementById("footer").innerHTML = "<font color='#494'>"+pagefoot+"</font>";
         }
         ws.send(JSON.stringify({action:"connected",parameters:Object.fromEntries((new URL(location)).searchParams)}));
         onoffline();
@@ -65,7 +69,7 @@ var connect = function() {
     ws.onclose = function() {
         console.log("DISCONNECTED");
         if (!inIframe) {
-            document.getElementById("footer").innerHTML = "<font color='#900'>"+ibmfoot+"</font>";
+            document.getElementById("footer").innerHTML = "<font color='#900'>"+pagefoot+"</font>";
         }
         setTimeout(function() { connect(); }, 2500);
     };
@@ -132,7 +136,7 @@ var handleData = function(data) {
 
 window.onunload = function() { if (ws) ws.close(); }
 
-var onoffline = function() { if (!navigator.onLine) map.addLayer(layers["_countries"]); }
+var onoffline = function() { if (!navigator.onLine) { map.addLayer(layers["_countries"]); } }
 
 document.addEventListener ("keydown", function (ev) {
     // Set Ctl-Alt-3 to switch to 3d view
@@ -169,6 +173,9 @@ if (inIframe === true) {
 
 // Create the Initial Map object.
 map = new L.map('map',{zoomSnap: 0.1}).setView(startpos, startzoom);
+map.whenReady(function() {
+    connect();
+});
 
 var droplatlng;
 var target = document.getElementById("map")
@@ -253,28 +260,29 @@ var menuButton = L.easyButton({states:[{icon:'fa-bars fa-lg', onClick:function()
 var fullscreenButton = L.control.fullscreen();
 var rulerButton = L.control.ruler({position:"topleft"});
 
-//var colorPickButton = L.easyButton({states:[{icon:'fa-tint fa-lg', onClick:function() { console.log("PICK"); }, title:'Pick Colour'}]});
-var redButton = L.easyButton('fa-square wm-red', function(btn) { changeDrawColour("#E7827F"); })
-var blueButton = L.easyButton('fa-square wm-blue', function(btn) { changeDrawColour("#94CCE2"); })
-var greenButton = L.easyButton('fa-square wm-green', function(btn) { changeDrawColour("#ACD6A4"); })
-var yellowButton = L.easyButton('fa-square wm-yellow', function(btn) { changeDrawColour("#F5F08B"); })
-var blackButton = L.easyButton('fa-square wm-black', function(btn) { changeDrawColour("#444444"); })
-var whiteButton = L.easyButton('fa-square wm-white', function(btn) { changeDrawColour("#EEEEEE"); })
-var colorControl = L.easyBar([redButton,blueButton,greenButton,yellowButton,blackButton,whiteButton]);
-
+var followMode = { accuracy:true };
+var followState = false;
+var trackMeButton;
+var errRing;
 
 function onLocationFound(e) {
-    var radius = e.accuracy;
-    //L.marker(e.latlng).addTo(map).bindPopup("You are within " + radius + " meters from this point").openPopup();
-    L.circle(e.latlng, radius, {color:"cyan", weight:4, opacity:0.8, fill:false, clickable:false}).addTo(map);
-    if (e.hasOwnProperty("heading")) {
-        var lengthAsDegrees = e.speed * 60 / 110540;
-        var ya = e.latlng.lat + Math.sin((90-e.heading)/180*Math.PI)*lengthAsDegrees*Math.cos(e.latlng.lng/180*Math.PI);
-        var xa = e.latlng.lng + Math.cos((90-e.heading)/180*Math.PI)*lengthAsDegrees;
-        var lla = new L.LatLng(ya,xa);
-        L.polygon([ e.latlng, lla ], {color:"cyan", weight:3, opacity:0.5, clickable:false}).addTo(map);
+    if (followState === true) { map.panTo(e.latlng); }
+    if (followMode.icon) {
+        var self = {name:followMode.name || "self", lat:e.latlng.lat, lon:e.latlng.lng, hdg:e.heading, speed:(e.speed*3.6 ?? undefined), layer:followMode.layer, icon:followMode.icon, iconColor:followMode.iconColor ?? "#910000" };
+        setMarker(self);
     }
-    ws.send(JSON.stringify({action:"point", lat:e.latlng.lat.toFixed(5), lon:e.latlng.lng.toFixed(5), point:"self", hdg:e.heading, speed:(e.speed*3.6 || undefined)}));
+    if (followMode.accuracy) {
+        errRing = L.circle(e.latlng, e.accuracy, {color:followMode.color ?? "cyan", weight:3, opacity:0.6, fill:false, clickable:false});
+        errRing.addTo(map);
+        // if (e.hasOwnProperty("heading")) {
+        //     var lengthAsDegrees = e.speed * 60 / 110540;
+        //     var ya = e.latlng.lat + Math.sin((90-e.heading)/180*Math.PI)*lengthAsDegrees*Math.cos(e.latlng.lng/180*Math.PI);
+        //     var xa = e.latlng.lng + Math.cos((90-e.heading)/180*Math.PI)*lengthAsDegrees;
+        //     var lla = new L.LatLng(ya,xa);
+        //     L.polygon([ e.latlng, lla ], {color:"cyan", weight:3, opacity:0.5, clickable:false}).addTo(map);
+        // }
+    }
+    ws.send(JSON.stringify({action:"point", lat:e.latlng.lat.toFixed(5), lon:e.latlng.lng.toFixed(5), point:"self", hdg:e.heading, speed:(e.speed*3.6 ?? undefined)}));
 }
 
 function onLocationError(e) { console.log(e.message); }
@@ -301,18 +309,38 @@ else {
     // Add the fullscreen button
     fullscreenButton.addTo(map);
 
+    trackMeButton = L.easyButton({
+        states: [{
+            stateName: 'track-on',
+            icon:      'fa-window-close-o fa-lg',
+            title:     'Disable tracking',
+            onClick: function(btn, map) {
+                btn.state('track-off');
+                followState = false;
+                if (errRing) { errRing.removeFrom(map); }
+                delMarker(followMode.name || "self")
+                map.stopLocate();
+            }
+        }, {
+            stateName: 'track-off',
+            icon:      'fa-crosshairs fa-lg',
+            title:     'Enable tracking',
+            onClick: function(btn, map) {
+                btn.state('track-on');
+                followState = true;
+                map.locate({setView:false, watch:followState, enableHighAccuracy:true});
+            }
+        }]
+    });
+    trackMeButton.state('track-off');
+    trackMeButton.addTo(map);
+
     // Add the locate my position button
-    L.easyButton( 'fa-crosshairs fa-lg', function() {
-        map.locate({setView:true, maxZoom:16});
-    }, "Locate me").addTo(map);
+    // L.easyButton( 'fa-crosshairs fa-lg', function() {
+    //     map.locate({setView:true, maxZoom:16});
+    // }, "Locate me").addTo(map);
 
-    map.on('locationfound', onLocationFound);
-    map.on('locationerror', onLocationError);
-
-    // Add the measure/ruler button
-    rulerButton.addTo(map);
-
-    // Create the clear heatmap button
+     // Create the clear heatmap button
     var clrHeat = L.easyButton( 'fa-eraser', function() {
         console.log("Reset heatmap");
         heat.setLatLngs([]);
@@ -332,6 +360,7 @@ document.getElementById('menu').innerHTML = helpMenu;
 
 // Add graticule
 var showGrid = false;
+var showRuler = false;
 var Lgrid = L.latlngGraticule({
     font: "Verdana",
     fontColor: "#666",
@@ -343,6 +372,69 @@ var Lgrid = L.latlngGraticule({
         {start:8, end:20, interval:1}
     ]
 });
+
+// Add small sidc icons around edge of map for things just outside of view
+// This function based heavily on Game Aware code from Måns Beckman
+// Copyright (c) 2013 Måns Beckman, All rights reserved.
+var edgeAware = function() {
+    if (!edgeEnabled) { return; }
+	map.removeLayer(edgeLayer)
+	edgeLayer = new L.layerGroup();
+	var mapBounds = map.getBounds();
+	var mapBoundsCenter = mapBounds.getCenter();
+
+	pSW = map.options.crs.latLngToPoint(mapBounds.getSouthWest(), map.getZoom());
+	pNE = map.options.crs.latLngToPoint(mapBounds.getNorthEast(), map.getZoom());
+	pCenter = map.options.crs.latLngToPoint(mapBoundsCenter, map.getZoom());
+
+	var viewBounds = L.latLngBounds(map.options.crs.pointToLatLng(L.point(pSW.x - (pCenter.x - pSW.x ), pSW.y - (pCenter.y - pSW.y )), map.getZoom()) , map.options.crs.pointToLatLng(L.point(pNE.x + (pNE.x - pCenter.x) , pNE.y + (pNE.y - pCenter.y) ), map.getZoom()) );
+	for (var id in markers) {
+        if (allData[id].hasOwnProperty("SIDC")) {
+            markerLatLng = markers[id].getLatLng();
+            if ( viewBounds.contains(markerLatLng) && !mapBounds.contains(markerLatLng) ) {
+                var k = (markerLatLng.lat - mapBoundsCenter.lat) / (markerLatLng.lng - mapBoundsCenter.lng);
+
+                if (markerLatLng.lng > mapBoundsCenter.lng) { x = mapBounds.getEast() - mapBoundsCenter.lng; }
+                else { x = (mapBounds.getWest() - mapBoundsCenter.lng); }
+
+                if (markerLatLng.lat < mapBoundsCenter.lat) { y = mapBounds.getSouth() - mapBoundsCenter.lat; }
+                else { y = mapBounds.getNorth() - mapBoundsCenter.lat; }
+
+                var lat = (mapBoundsCenter.lat + (k * x));
+                var lng = (mapBoundsCenter.lng + (y / k));
+                var iconAnchor = {x:5, y:5}
+
+                if (lng > mapBounds.getEast()) {
+                    lng = mapBounds.getEast();
+                    iconAnchor.x = 20;
+                }
+                if (lng < mapBounds.getWest()) {
+                    lng = mapBounds.getWest();
+                    iconAnchor.x = -5;
+                };
+                if (lat < mapBounds.getSouth()) {
+                    lat = mapBounds.getSouth();
+                    iconAnchor.y = 15;
+                }
+                if (lat > mapBounds.getNorth()) {
+                    lat = mapBounds.getNorth();
+                    iconAnchor.y = -5;
+                };
+
+                var eico = new ms.Symbol(allData[id].SIDC.substr(0,5)+"-------",{size:9});
+                var myicon = L.icon({
+                    iconUrl: eico.toDataURL(),
+                    iconAnchor: new L.Point(iconAnchor.x, iconAnchor.y),
+                    className: "natoicon-s",
+                });
+
+                edgeLayer.addLayer(L.marker([lat,lng],{icon:myicon}))
+            }
+        }
+	}
+	edgeLayer.addTo(map)
+}
+// end of edge function
 
 var panit = false;
 function doPanit(v) {
@@ -574,8 +666,8 @@ map.on('overlayadd', function(e) {
     }
     if (e.name == "drawing") {
         overlays["drawing"].bringToFront();
-        map.addControl(drawControl);
         map.addControl(colorControl);
+        map.addControl(drawControl);
     }
     ws.send(JSON.stringify({action:"addlayer", name:e.name}));
 });
@@ -588,8 +680,8 @@ map.on('overlayremove', function(e) {
         layers["_daynight"].clearLayers();
     }
     if (e.name == "drawing") {
-        map.removeControl(colorControl);
         map.removeControl(drawControl);
+        map.removeControl(colorControl);
     }
     ws.send(JSON.stringify({action:"dellayer", name:e.name}));
 });
@@ -643,13 +735,21 @@ map.on('zoomend', function() {
     showMapCurrentZoom();
     window.localStorage.setItem("lastzoom", map.getZoom());
     var b = map.getBounds();
+    oldBounds = {sw:{lat:b._southWest.lat,lng:b._southWest.lng},ne:{lat:b._northEast.lat,lng:b._northEast.lng}};
     ws.send(JSON.stringify({action:"bounds", south:b._southWest.lat, west:b._southWest.lng, north:b._northEast.lat, east:b._northEast.lng, zoom:map.getZoom() }));
+    edgeAware();
 });
 map.on('moveend', function() {
     window.localStorage.setItem("lastpos",JSON.stringify(map.getCenter()));
     var b = map.getBounds();
-    ws.send(JSON.stringify({action:"bounds", south:b._southWest.lat, west:b._southWest.lng, north:b._northEast.lat, east:b._northEast.lng, zoom:map.getZoom() }));
+    if (b._southWest.lat !== oldBounds.sw.lat && b._southWest.lng !== oldBounds.sw.lng && b._northEast.lat !== oldBounds.ne.lat && b._northEast.lng !== oldBounds.ne.lng) {
+        ws.send(JSON.stringify({action:"bounds", south:b._southWest.lat, west:b._southWest.lng, north:b._northEast.lat, east:b._northEast.lng, zoom:map.getZoom() }));
+        oldBounds = {sw:{lat:b._southWest.lat,lng:b._southWest.lng},ne:{lat:b._northEast.lat,lng:b._northEast.lng}};
+    }
+    edgeAware();
 });
+map.on('locationfound', onLocationFound);
+map.on('locationerror', onLocationError);
 
 //map.on('contextmenu', function(e) {
 //    ws.send(JSON.stringify({action:"rightclick", lat:e.latlng.lat.toFixed(5), lon:e.latlng.lng.toFixed(5)}));
@@ -658,7 +758,7 @@ map.on('moveend', function() {
 // single right click to add a marker
 var addmenu = "<b>Add marker</b><br><input type='text' id='rinput' autofocus onkeydown='if (event.keyCode == 13) addThing();' placeholder='name (,icon/SIDC, layer, colour, heading)'/>";
 if (navigator.onLine) { addmenu += '<br/><a href="https://spatialillusions.com/unitgenerator/" target="_new">MilSymbol SIDC generator</a>'; }
-var rightmenuMap = L.popup({keepInView:true, minWidth:250}).setContent(addmenu);
+var rightmenuMap = L.popup({keepInView:true, minWidth:260}).setContent(addmenu);
 
 var rclk = {};
 var hiderightclick = false;
@@ -669,7 +769,7 @@ var addThing = function() {
     var bits = thing.split(",");
     var icon = (bits[1] || "circle").trim();
     var lay = (bits[2] || "_drawing").trim();
-    var colo = (bits[3] || "#910000").trim();
+    var colo = (bits[3] ?? "#910000").trim();
     var hdg = parseFloat(bits[4] || 0);
     var drag = true;
     var regi = /^[S,G,E,I,O][A-Z]{3}.*/i;  // if it looks like a SIDC code
@@ -694,6 +794,7 @@ var feedback = function(n,v,a,c) {
         // ws.send(JSON.stringify({action:a||"feedback", name:n, value:v, layer:markers[n].lay, lat:fp.lat, lon:fp.lng}));
         var fb = allData[n];
         fb.action = a || "feedback";
+        if (v !== undefined) { fb.value = v; }
         ws.send(JSON.stringify(fb));
     }
     else {
@@ -739,19 +840,28 @@ map.on('contextmenu', function(e) {
     }
 });
 
+
+// Layer control based on select box rather than radio buttons.
+//var layercontrol = L.control.selectLayers(basemaps, overlays).addTo(map);
+layercontrol = L.control.layers(basemaps, overlays);
+
 // Add all the base layer maps if we are online.
 var addBaseMaps = function(maplist,first) {
-    //console.log("MAPS",first,maplist)
-    if (navigator.onLine) {
-        var layerlookup = { OSMG:"OSM grey", OSMC:"OSM", OSMH:"OSM Humanitarian", EsriC:"Esri", EsriS:"Esri Satellite",
+    // console.log("MAPS",first,maplist)
+    var layerlookup = { OSMG:"OSM grey", OSMC:"OSM", OSMH:"OSM Humanitarian", EsriC:"Esri", EsriS:"Esri Satellite",
         EsriR:"Esri Relief", EsriT:"Esri Topography", EsriO:"Esri Ocean", EsriDG:"Esri Dark Grey", NatGeo: "National Geographic",
-        UKOS:"UK OS OpenData", UKOS45:"UK OS 1919-1947", UKOS00:"UK OS 1900", OpTop:"Open Topo Map",
-        HB:"Hike Bike OSM", ST:"Stamen Topography", SW: "Stamen Watercolor", AN:"AutoNavi (Chinese)" }
+        UKOS:"UK OS OpenData", OpTop:"Open Topo Map",
+        HB:"Hike Bike OSM", ST:"Stamen Topography", SW:"Stamen Watercolor", AN:"AutoNavi (Chinese)"
+    }
 
+    if (navigator.onLine) {
         // Use this for OSM online maps
         var osmUrl='https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
         var osmAttrib='Map data © OpenStreetMap contributors';
 
+        if (maplist.indexOf("MB3d")!==-1) { // handle the case of 3d by redirecting to that page instead.
+            window.location.href("index3d.html");
+        }
         if (maplist.indexOf("OSMG")!==-1) {
             basemaps[layerlookup["OSMG"]] = new L.TileLayer.Grayscale(osmUrl, {
                 attribution:osmAttrib,
@@ -863,25 +973,6 @@ var addBaseMaps = function(maplist,first) {
             });
         }
 
-        if (maplist.indexOf("OS45")!==-1) {
-            basemaps[layerlookup["OS45"]] = L.tileLayer( 'https://nls-{s}.tileserver.com/nls/{z}/{x}/{y}.jpg', {
-                attribution: 'Historical Maps Layer, from <a href="https://maps.nls.uk/projects/api/">NLS Maps</a>',
-                bounds: [[49.6, -12], [61.7, 3]],
-                minZoom:1, maxZoom:18,
-                subdomains: '0123'
-            });
-        }
-
-        if (maplist.indexOf("OS00")!==-1) {
-            //var NLS_OS_1900 = L.tileLayer('https://nls-{s}.tileserver.com/NLS_API/{z}/{x}/{y}.jpg', {
-                basemaps[layerlookup["OS00"]] = L.tileLayer('https://nls-{s}.tileserver.com/fpsUZbzrfb5d/{z}/{x}/{y}.jpg', {
-                attribution: '<a href="https://geo.nls.uk/maps/">National Library of Scotland Historic Maps</a>',
-                bounds: [[49.6, -12], [61.7, 3]],
-                minZoom:1, maxNativeZoom:19, maxZoom:20,
-                subdomains: '0123'
-            });
-        }
-
         // Nice terrain based maps by Stamen Design
         if (maplist.indexOf("ST")!==-1) {
             var terrainUrl = "https://stamen-tiles-{s}.a.ssl.fastly.net/terrain/{z}/{x}/{y}.jpg";
@@ -905,21 +996,21 @@ var addBaseMaps = function(maplist,first) {
                 attribution: 'Map tiles by <a href="https://stamen.com">Stamen Design</a>, under <a href="https://creativecommons.org/licenses/by/3.0">CC BY 3.0</a>. Data by <a href="https://openstreetmap.org">OpenStreetMap</a>, under <a href="https://creativecommons.org/licenses/by-sa/3.0">CC BY SA</a>'
             });
         }
+    }
 
-        if (first) {
-            if (layerlookup[first]) { basemaps[layerlookup[first]].addTo(map); }
-            else { basemaps[first].addTo(map); }
-        }
-        else {
-            basemaps[Object.keys(basemaps)[0]].addTo(map);
-        }
-        if (showLayerMenu) {
-            map.removeControl(layercontrol);
-            layercontrol = L.control.layers(basemaps, overlays).addTo(map);
-        }
+    if (first) {
+        if (layerlookup[first]) { baselayername = layerlookup[first]; }
+        else { basenayername = first; }
+    }
+    else {
+        basenayername = Object.keys(basemaps)[0];
+    }
+    basemaps[baselayername].addTo(map);
+    if (showLayerMenu) {
+        map.removeControl(layercontrol);
+        layercontrol = L.control.layers(basemaps, overlays).addTo(map);
     }
 }
-
 
 // Now add the overlays
 var addOverlays = function(overlist) {
@@ -929,6 +1020,17 @@ var addOverlays = function(overlist) {
 
     // Add the drawing layer...
     if (overlist.indexOf("DR")!==-1) {
+        //var colorPickButton = L.easyButton({states:[{icon:'fa-tint fa-lg', onClick:function() { console.log("PICK"); }, title:'Pick Colour'}]});
+        var redButton = L.easyButton('fa-square wm-red', function(btn) { changeDrawColour("#FF4040"); })
+        var blueButton = L.easyButton('fa-square wm-blue', function(btn) { changeDrawColour("#4040F0"); })
+        var greenButton = L.easyButton('fa-square wm-green', function(btn) { changeDrawColour("#40D040"); })
+        var yellowButton = L.easyButton('fa-square wm-yellow', function(btn) { changeDrawColour("#FFFF40"); })
+        var cyanButton = L.easyButton('fa-square wm-cyan', function(btn) { changeDrawColour("#40F0F0"); })
+        var magentaButton = L.easyButton('fa-square wm-magenta', function(btn) { changeDrawColour("#F040F0"); })
+        var blackButton = L.easyButton('fa-square wm-black', function(btn) { changeDrawColour("#000000"); })
+        var whiteButton = L.easyButton('fa-square wm-white', function(btn) { changeDrawColour("#EEEEEE"); })
+        colorControl = L.easyBar([redButton,blueButton,greenButton,yellowButton,cyanButton,magentaButton,blackButton,whiteButton]);
+
         layers["_drawing"] = new L.FeatureGroup();
         overlays["drawing"] = layers["_drawing"];
         map.options.drawControlTooltips = false;
@@ -951,11 +1053,13 @@ var addOverlays = function(overlist) {
             // }
         });
         var changeDrawColour = function(col) {
+            drawingColour = col;
+            // console.log("COLOR",col)
             drawControl.setDrawingOptions({
-                polyline: { shapeOptions: { color:col } },
-                circle: { shapeOptions: { color:col } },
-                rectangle: { shapeOptions: { color:col } },
-                polygon: { shapeOptions: { color:col } }
+                polyline: { shapeOptions: { color:drawingColour } },
+                circle: { shapeOptions: { color:drawingColour } },
+                rectangle: { shapeOptions: { color:drawingColour } },
+                polygon: { shapeOptions: { color:drawingColour } }
             });
         }
         var shape;
@@ -979,7 +1083,7 @@ var addOverlays = function(overlist) {
             else {
                 cent = e.layer.getBounds().getCenter();
             }
-            var m = {action:"draw", name:name, layer:"_drawing", options:e.layer.options, radius:e.layer._mRadius, lat:la, lon:lo};
+            var m = {action:"draw", name:name, type:e.layerType, layer:"_drawing", options:e.layer.options, radius:e.layer._mRadius, lat:la, lon:lo};
             if (e.layer.hasOwnProperty("_latlngs")) {
                 if (e.layer.options.fill === false) { m.line = e.layer._latlngs; }
                 else { m.area = e.layer._latlngs[0]; }
@@ -1094,6 +1198,10 @@ var addOverlays = function(overlist) {
                     var r = decode(data.routes[0].geometry).map( x => L.latLng(x[0],x[1]) );
                     polygons[n]._latlngs = r;
                     shape.m.line = r;
+                    // shape.m.type = {label:"routing", distance:data.routes[0].distance, duration:data.routes[0].duration}
+                    shape.m.type = "route";
+                    shape.m.distance = data.routes[0].distance;
+                    shape.m.duration = data.routes[0].duration;
                     sendDrawing(n);
                 });
         }
@@ -1101,7 +1209,7 @@ var addOverlays = function(overlist) {
     }
 
     // Add the countries (world-110m) for offline use
-    if (overlist.indexOf("CO")!==-1 || (!navigator.onLine)) {
+    if (overlist.indexOf("CO") !== -1 || !navigator.onLine) {
         var customTopoLayer = L.geoJson(null, {clickable:false, style: {color:"blue", weight:2, fillColor:"#cf6", fillOpacity:0.04}});
         layers["_countries"] = omnivore.topojson('images/world-50m-flat.json',null,customTopoLayer);
         overlays["countries"] = layers["_countries"];
@@ -1173,9 +1281,13 @@ var addOverlays = function(overlist) {
         });
     }
 
-    // Add the heatmap layer
-    if (overlist.indexOf("HM")!==-1) {
+    // Add the heatmap layer (and add delete LatLng function)
+    if (overlist.indexOf("HM") !== -1) {
         heat = L.heatLayer([], {radius:60, gradient:{0.2:'blue', 0.4:'lime', 0.6:'red', 0.8:'yellow', 1:'white'}});
+        heat.delLatLng = function(ll) {
+            heat._latlngs = heat._latlngs.filter(v => { return v != ll; } );
+            heat._redraw();
+        }
         layers["_heat"] = new L.LayerGroup().addLayer(heat);
         overlays["heatmap"] = layers["_heat"];
     }
@@ -1186,24 +1298,11 @@ var addOverlays = function(overlist) {
     }
 }
 
-// Layer control based on select box rather than radio buttons.
-//var layercontrol = L.control.selectLayers(basemaps, overlays).addTo(map);
-var layercontrol = L.control.layers(basemaps, overlays);
-
 // Add the layers control widget
 if (!inIframe) { layercontrol.addTo(map); }
 else { showLayerMenu = false;}
 
-var coords = L.control.coordinates({
-    position:"bottomleft", //optional default "bottomright"
-    decimals:4, //optional default 4
-    decimalSeperator:".", //optional default "."
-    labelTemplateLat:"&nbsp;Lat: {y}", //optional default "Lat: {y}"
-    labelTemplateLng:"&nbsp;Lon: {x}", //optional default "Lng: {x}"
-    enableUserInput:false, //optional default true
-    useDMS:true, //optional default false
-    useLatLngOrder: true, //ordering of labels, default false-> lng-lat
-});
+var coords = L.control.mouseCoordinate({position:"bottomleft"});
 
 // Add an optional legend
 var legend = L.control({ position: "bottomleft" });
@@ -1248,6 +1347,10 @@ var delMarker = function(dname,note) {
         delete polygons[dname+"_"];
     }
     if (typeof markers[dname] != "undefined") {
+        if (heat && markers[dname].hasOwnProperty("_latlng")) {
+            try { heat.delLatLng(markers[dname]._latlng); }
+            catch(e) { }
+        }
         layers[markers[dname].lay].removeLayer(markers[dname]);
         map.removeLayer(markers[dname]);
         delete markers[dname];
@@ -1297,7 +1400,7 @@ var rangerings = function(latlng, options) {
             radius: options.ranges[i],
             fill: false,
             color: options.color,
-            weight: options.weight || 1
+            weight: options.weight ?? 1
         }).setDirection(options.pan, options.fov).addTo(rings);
     }
     return rings;
@@ -1305,8 +1408,12 @@ var rangerings = function(latlng, options) {
 
 // the MAIN add something to map function
 function setMarker(data) {
-
     var rightmenu = function(m) {
+        m.on('click', function(e) {
+            var fb = allData[data.name];
+            fb.action = "click";
+            ws.send(JSON.stringify(fb));
+        });
         // customise right click context menu
         var rightcontext = "";
         //if (polygons[data.name] == undefined) {
@@ -1348,8 +1455,8 @@ function setMarker(data) {
     var ll;
     var lli = null;
     var opt = {};
-    opt.color = data.color || data.lineColor || "#910000";
-    opt.fillColor = data.fillColor || "#910000";
+    opt.color = data.color ?? data.lineColor ?? "#910000";
+    opt.fillColor = data.fillColor ?? "#910000";
     opt.stroke = (data.hasOwnProperty("stroke")) ? data.stroke : true;
     opt.weight = data.weight;
     opt.opacity = data.opacity;
@@ -1379,7 +1486,7 @@ function setMarker(data) {
     if (markers.hasOwnProperty(data.name) && markers[data.name].hasOwnProperty("lay")) {
         lll = markers[data.name].lay;
     }
-    var lay = data.layer || lll;
+    var lay = data.layer ?? lll;
     if (!data.hasOwnProperty("action") || data.action.indexOf("layer") === -1) {
         if (typeof layers[lay] == "undefined") {  // add layer if if doesn't exist
             if (clusterAt > 0) {
@@ -1428,7 +1535,9 @@ function setMarker(data) {
         if (!data.hasOwnProperty("opacity")) { opt.opacity = 0.8; }
         var polyln = L.polyline(data.line, opt);
         polygons[data.name] = rightmenu(polyln);
-        if (data.hasOwnProperty("fit") && data.fit === true) {
+        if (data.hasOwnProperty("fly") && data.fly === true) {
+            map.flyToBounds(polygons[data.name].getBounds(),{padding:[50,50]})
+        } else if (data.hasOwnProperty("fit") && data.fit === true) {
             map.fitBounds(polygons[data.name].getBounds(),{padding:[50,50]})
         }
     }
@@ -1437,7 +1546,24 @@ function setMarker(data) {
         if (data.area.length === 2) { polyarea = L.rectangle(data.area, opt); }
         else { polyarea = L.polygon(data.area, opt); }
         polygons[data.name] = rightmenu(polyarea);
-        if (data.hasOwnProperty("fit") && data.fit === true) {
+        if (data.hasOwnProperty("fly") && data.fly === true) {
+            map.flyToBounds(polygons[data.name].getBounds(),{padding:[50,50]})
+        } else if (data.hasOwnProperty("fit") && data.fit === true) {
+            map.fitBounds(polygons[data.name].getBounds(),{padding:[50,50]})
+        }
+    }
+    if (data.hasOwnProperty("greatcircle") && Array.isArray(data.greatcircle) && data.greatcircle.length === 2) {
+        delete opt.fill;
+        opt.vertices = opt.vertices || 20;
+        if (!data.hasOwnProperty("weight")) { opt.weight = 3; }    //Standard settings different for lines
+        if (!data.hasOwnProperty("opacity")) { opt.opacity = 0.8; }
+        var greatc = L.Polyline.Arc(data.greatcircle[0], data.greatcircle[1], opt);
+        var aml = new L.Wrapped.Polyline(greatc._latlngs, opt);
+
+        polygons[data.name] = rightmenu(aml);
+        if (data.hasOwnProperty("fly") && data.fly === true) {
+            map.flyToBounds(polygons[data.name].getBounds(),{padding:[50,50]})
+        } else if (data.hasOwnProperty("fit") && data.fit === true) {
             map.fitBounds(polygons[data.name].getBounds(),{padding:[50,50]})
         }
     }
@@ -1451,7 +1577,8 @@ function setMarker(data) {
         if (data.hasOwnProperty("lat") && data.hasOwnProperty("lon")) {
             var polycirc;
             if (Array.isArray(data.radius)) {
-                polycirc = L.ellipse(new L.LatLng((data.lat*1), (data.lon*1)), [data.radius[0]*Math.cos(data.lat*Math.PI/180), data.radius[1]], data.tilt || 0, opt);
+                //polycirc = L.ellipse(new L.LatLng((data.lat*1), (data.lon*1)), [data.radius[0]*Math.cos(data.lat*Math.PI/180), data.radius[1]], data.tilt || 0, opt);
+                polycirc = L.ellipse(new L.LatLng((data.lat*1), (data.lon*1)), [data.radius[0], data.radius[1]], data.tilt || 0, opt);
             }
             else {
                 polycirc = L.circle(new L.LatLng((data.lat*1), (data.lon*1)), data.radius*1, opt);
@@ -1522,11 +1649,11 @@ function setMarker(data) {
     if (data.draggable === true) { drag = true; }
 
     if (data.hasOwnProperty("icon")) {
-        var dir = parseFloat(data.hdg || data.heading || data.bearing || "0");
+        var dir = parseFloat(data.hdg ?? data.heading ?? data.bearing ?? "0");
         if (data.icon === "ship") {
             marker = L.boatMarker(ll, {
                 title: data.name,
-                color: (data.iconColor || "blue")
+                color: (data.iconColor ?? "blue")
             });
             marker.setHeading(dir);
             q = 'https://www.bing.com/images/search?q='+data.icon+'%20%2B"'+encodeURIComponent(data.name)+'"';
@@ -1550,7 +1677,7 @@ function setMarker(data) {
             marker = L.marker(ll, {title:data.name, icon:myMarker, draggable:drag});
         }
         else if (data.icon === "smallplane") {
-            data.iconColor = data.iconColor || "black";
+            data.iconColor = data.iconColor ?? "black";
             icon = '<svg xmlns="http://www.w3.org/2000/svg" version="1.0" width="20" height="20">';
             icon += '<path d="M15.388 4.781c.068.068.061.154-.171.656-.028.06-.18.277-.18.277s.102.113.13.14c.054.055.078.175.056.27-.068.295-.89 1.47-1.35 1.93-.285.286-.432.481-.422.56.009.068.117.356.24.64.219.5.3.599 2.762 3.339 1.95 2.169 2.546 2.87 2.582 3.028.098.439-.282.847-1.264 1.356l-.507.263-7.389-5.29-4.43 3.365.102.18c.056.099.519.676 1.029 1.283.51.607.933 1.161.94 1.232.026.284-1.111 1.177-1.282 1.006-.27-.27-1.399-1.131-1.494-1.14-.068-.007-1.04-.747-1.37-1.077-.329-.33-1.07-1.301-1.076-1.37-.01-.094-.871-1.224-1.14-1.493-.171-.171.722-1.308 1.006-1.282.07.007.625.43 1.231.94.607.51 1.185.973 1.283 1.029l.18.101 3.365-4.43-5.29-7.388.263-.507c.51-.982.918-1.362 1.357-1.264.158.035.859.632 3.028 2.581 2.74 2.462 2.838 2.544 3.339 2.762.284.124.572.232.639.24.08.01.274-.136.56-.422.46-.46 1.635-1.282 1.93-1.35.095-.022.216.003.27.057.028.028.139.129.139.129s.217-.153.277-.18c.502-.233.59-.238.657-.17z" fill="'+data.iconColor+'"/></svg>';
             var svgplane = "data:image/svg+xml;base64," + btoa(icon);
@@ -1565,7 +1692,7 @@ function setMarker(data) {
             dir = dir - 90;
             var sc = 1;
             if (dir < -90 || dir >= 90) { sc = -1; }
-            data.iconColor = data.iconColor || "#910000";
+            data.iconColor = data.iconColor ?? "#910000";
             var p = "m595.5 97.332-30.898-68.199c-11.141-24.223-35.344-39.762-62.004-39.801h-443.3c-32.738 0.035157-59.266 26.562-59.301 59.305v148.2c0 17.949 14.551 32.5 32.5 32.5h48.5c4.7344 23.309 25.219 40.051 49 40.051s44.266-16.742 49-40.051h242c4.7344 23.309 25.219 40.051 49 40.051s44.266-16.742 49-40.051h53.203c12.348-0.003906 23.219-8.1484 26.699-20 0.72266-2.5391 1.0898-5.1602 1.0977-7.7969v-83.5c-0.003906-7.1445-1.5391-14.203-4.5-20.703zm-545.5 12c-5.5234 0-10-4.4766-10-10v-80c0-5.5195 4.4766-10 10-10h70c5.5234 0 10 4.4805 10 10v80c0 5.5234-4.4766 10-10 10zm80 140c-16.566 0-30-13.43-30-30 0-16.566 13.434-30 30-30s30 13.434 30 30c-0.046875 16.551-13.453 29.953-30 30zm110-150c0 5.5234-4.4766 10-10 10h-70c-5.5234 0-10-4.4766-10-10v-80c0-5.5195 4.4766-10 10-10h70c5.5234 0 10 4.4805 10 10zm110 0c0 5.5234-4.4766 10-10 10h-70c-5.5234 0-10-4.4766-10-10v-80c0-5.5195 4.4766-10 10-10h70c5.5234 0 10 4.4805 10 10zm30 10c-5.5234 0-10-4.4766-10-10v-80c0-5.5195 4.4766-10 10-10h70c5.5234 0 10 4.4805 10 10v80c0 5.5234-4.4766 10-10 10zm90 140c-16.566 0-30-13.43-30-30 0-16.566 13.434-30 30-30s30 13.434 30 30c-0.046875 16.551-13.453 29.953-30 30zm19.199-140c-5.1836-0.46094-9.168-4.793-9.1992-10v-80.086c0-5.4727 4.4375-9.9141 9.9141-9.9141h12.684c18.824 0.050781 35.914 11.012 43.805 28.102l30.898 68.199c1.6133 3.5547 2.5 7.3984 2.6016 11.297z";
             icon = '<svg width="640pt" height="640pt" viewBox="-20 -180 640 640" xmlns="http://www.w3.org/2000/svg">';
             icon += '<path d="'+p+'" fill="'+data.iconColor+'"/></svg>';
@@ -1578,7 +1705,7 @@ function setMarker(data) {
             marker = L.marker(ll, {title:data.name, icon:myMarker, draggable:drag});
         }
         else if (data.icon === "helicopter") {
-            data.iconColor = data.iconColor || "black";
+            data.iconColor = data.iconColor ?? "black";
             if (data.hasOwnProperty("squawk")) {
                 if (data.squawk == 7500 || data.squawk == 7600 || data.squawk == 7700) {
                     data.iconColor = "red";
@@ -1730,7 +1857,7 @@ function setMarker(data) {
         }
         else if (data.icon.match(/^:.*:$/g)) {
             var em = emojify(data.icon);
-            var col = data.iconColor || "#910000";
+            var col = data.iconColor ?? "#910000";
             myMarker = L.divIcon({
                 className:"emicon",
                 html: '<center><span style="font-size:2em; color:'+col+'">'+em+'</span></center>',
@@ -1739,8 +1866,8 @@ function setMarker(data) {
             marker = L.marker(ll, {title:data.name, icon:myMarker, draggable:drag});
             labelOffset = [12,-4];
         }
-        else if (data.icon.match(/^https?:.*$/)) {
-            var sz = data.iconSize || 32;
+        else if (data.icon.match(/^https?:.*$|^\//)) {
+            var sz = data.iconSize ?? 32;
             myMarker = L.icon({
                 iconUrl: data.icon,
                 iconSize: [sz, sz],
@@ -1752,7 +1879,7 @@ function setMarker(data) {
             delete data.iconSize;
         }
         else if (data.icon.substr(0,3) === "fa-") {
-            var col = data.iconColor || "#910000";
+            var col = data.iconColor ?? "#910000";
             var imod = "";
             if (data.icon.indexOf(" ") === -1) { imod = "fa-2x "; }
             myMarker = L.divIcon({
@@ -1766,7 +1893,7 @@ function setMarker(data) {
             labelOffset = [8,-8];
         }
         else if (data.icon.substr(0,3) === "wi-") {
-            var col = data.iconColor || "#910000";
+            var col = data.iconColor ?? "#910000";
             var imod = "";
             if (data.icon.indexOf(" ") === -1) { imod = "wi-2x "; }
             myMarker = L.divIcon({
@@ -1781,8 +1908,8 @@ function setMarker(data) {
         }
         else {
             myMarker = L.VectorMarkers.icon({
-                icon: data.icon || "circle",
-                markerColor: (data.iconColor || "#910000"),
+                icon: data.icon ?? "circle",
+                markerColor: (data.iconColor ?? "#910000"),
                 prefix: 'fa',
                 iconColor: 'white'
             });
@@ -1817,11 +1944,12 @@ function setMarker(data) {
             className: "natoicon",
         });
         marker =  L.marker(ll, { title:data.name, icon:myicon, draggable:drag });
+        edgeAware();
     }
     else {
         myMarker = L.VectorMarkers.icon({
             icon: "circle",
-            markerColor: (data.iconColor || "#910000"),
+            markerColor: (data.iconColor ?? "#910000"),
             prefix: 'fa',
             iconColor: 'white'
         });
@@ -1970,11 +2098,11 @@ function setMarker(data) {
     if (data.fill) { delete data.fill; }
     if (data.draggable) { delete data.draggable; }
     //if (!isNaN(data.speed)) { data.speed = data.speed.toFixed(2); }
-    if (data.hasOwnProperty("clickable")) { delete data.clickable; }
     if (data.hasOwnProperty("fillColor")) { delete data.fillColor; }
     if (data.hasOwnProperty("radius")) { delete data.radius; }
+    if (data.hasOwnProperty("greatcircle")) { delete data.greatcircle; }
     for (var i in data) {
-        if ((i != "name") && (i != "length")) {
+        if ((i != "name") && (i != "length") && (i != "clickable")) {
             if (typeof data[i] === "object") {
                 words += i +" : "+JSON.stringify(data[i])+"<br/>";
             } else {
@@ -1987,16 +2115,18 @@ function setMarker(data) {
     words = "<b>"+data.name+"</b><br/>" + words; //"<button style=\"border-radius:4px; float:right; background-color:lightgrey;\" onclick='popped=false;popmark.closePopup();'>X</button><br/>" + words;
     var wopt = {autoClose:false, closeButton:true, closeOnClick:false, minWidth:200};
     if (words.indexOf('<video ') >=0 || words.indexOf('<img ') >=0 ) { wopt.maxWidth="640"; }
-    marker.bindPopup(words, wopt);
-    marker._popup.dname = data.name;
+    if (!data.hasOwnProperty("clickable") && data.clickable != false) {
+        marker.bindPopup(words, wopt);
+        marker._popup.dname = data.name;
+    }
     marker.lay = lay;                       // and the layer it is on
 
-    marker.on('click', function(e) {
-        //ws.send(JSON.stringify({action:"click",name:marker.name,layer:marker.lay,icon:marker.icon,iconColor:marker.iconColor,SIDC:marker.SIDC,draggable:true,lat:parseFloat(marker.getLatLng().lat.toFixed(6)),lon:parseFloat(marker.getLatLng().lng.toFixed(6))}));
-        var fb = allData[marker.name];
-        fb.action = "click";
-        ws.send(JSON.stringify(fb));
-    });
+    // marker.on('click', function(e) {
+    //     //ws.send(JSON.stringify({action:"click",name:marker.name,layer:marker.lay,icon:marker.icon,iconColor:marker.iconColor,SIDC:marker.SIDC,draggable:true,lat:parseFloat(marker.getLatLng().lat.toFixed(6)),lon:parseFloat(marker.getLatLng().lng.toFixed(6))}));
+    //     var fb = allData[marker.name];
+    //     fb.action = "click";
+    //     ws.send(JSON.stringify(fb));
+    // });
     if (heat && ((data.addtoheatmap != false) || (!data.hasOwnProperty("addtoheatmap")))) { // Added to give ability to control if points from active layer contribute to heatmap
         if (heatAll || map.hasLayer(layers[lay])) { heat.addLatLng(lli); }
     }
@@ -2070,7 +2200,7 @@ function setMarker(data) {
 function doCommand(cmd) {
     // console.log("COMMAND",cmd);
     if (cmd.init && cmd.hasOwnProperty("maplist")) {
-        basemaps = [];
+        //basemaps = {};
         addBaseMaps(cmd.maplist,cmd.layer);
     }
     if (cmd.init && cmd.hasOwnProperty("overlist")) {
@@ -2135,8 +2265,8 @@ function doCommand(cmd) {
             if ((cmd.grid.showgrid == "false" || cmd.grid.showgrid == false ) && showGrid) { changed = true; }
             if (changed) {
                 showGrid = !showGrid;
-                if (showGrid) { Lgrid.addTo(map); rulerButton.addTo(map); }
-                else { Lgrid.removeFrom(map); rulerButton.remove(); }
+                if (showGrid) { Lgrid.addTo(map);}
+                else { Lgrid.removeFrom(map);}
             }
         }
         if (cmd.grid.hasOwnProperty("opt")) {
@@ -2147,19 +2277,50 @@ function doCommand(cmd) {
             }
         }
     }
-    if (cmd.hasOwnProperty("button")) {
-        if (cmd.button.icon) {
-            if (!buttons[cmd.button.name]) {
-                buttons[cmd.button.name] = L.easyButton( cmd.button.icon, function() {
-                    ws.send(JSON.stringify({action:"button",name:cmd.button.name}));
-                }, cmd.button.name, { position:cmd.button.position||'topright' }).addTo(map);
+    if (cmd.hasOwnProperty("ruler")) {
+        if (cmd.ruler.hasOwnProperty("showruler")) {
+            var changed = false;
+            if ((cmd.ruler.showruler == "true" || cmd.ruler.showruler == true ) && !showRuler) { changed = true; }
+            if ((cmd.ruler.showruler == "false" || cmd.ruler.showruler == false ) && showRuler) { changed = true; }
+            if (changed) {
+                showRuler = !showRuler;
+                if (showRuler) { rulerButton.addTo(map); }
+                else { rulerButton.remove(); }
             }
         }
-        else {
-            if (buttons[cmd.button.name]) {
-                buttons[cmd.button.name].removeFrom(map);
-                delete buttons[cmd.button.name];
+    }
+    if (cmd.hasOwnProperty("button")) {
+        if (!Array.isArray(cmd.button)) { cmd.button = [cmd.button]; }
+        cmd.button.forEach(function(b) {
+            if (b.icon) {
+                if (!buttons[b.name]) {
+                    buttons[b.name] = L.easyButton( b.icon, function() {
+                        ws.send(JSON.stringify({action:"button", name:b.name}));
+                    }, b.name, { position:b.position||'topright' }).addTo(map);
+                }
             }
+            else {
+                if (buttons[b.name]) {
+                    buttons[b.name].removeFrom(map);
+                    delete buttons[b.name];
+                }
+            }
+        })
+    }
+    if (cmd.hasOwnProperty("trackme")) {
+        if (cmd.trackme === false) {
+            followState = false;
+            map.stopLocate();
+            if (errRing) { errRing.removeFrom(map); }
+            delMarker(followMode.name || "self")
+            if (trackMeButton !== undefined) { trackMeButton.state('track-off'); }
+        }
+        else {
+            followState = true;
+            if (cmd.trackme === true) { followMode = { accuracy:true }; }
+            else { followMode = cmd.trackme; }
+            map.locate({setView:false, watch:followState, enableHighAccuracy:true});
+            if (trackMeButton !== undefined) { trackMeButton.state('track-on'); }
         }
     }
     if (cmd.hasOwnProperty("contextmenu")) {
@@ -2176,16 +2337,14 @@ function doCommand(cmd) {
     if (cmd.hasOwnProperty("coords")) {
         try { coords.removeFrom(map); }
         catch(e) {}
-        if (cmd.coords == "dms") {
-            coords.options.useDMS = true;
-            showMouseCoords = "dms";
-            coords.addTo(map);
-        }
-        if (cmd.coords == "deg") {
-            coords.options.useDMS = false;
-            showMouseCoords = "deg";
-            coords.addTo(map);
-        }
+        var opts = {gps:false, gpsLong:false, utm:false, utmref:false, position:"bottomleft"}
+        if (cmd.coords == "deg") { opts.gps = true; }
+        if (cmd.coords == "dms") { opts.gpsLong = true; }
+        if (cmd.coords == "utm") { opts.utm = true; }
+        if (cmd.coords == "mgrs") { opts.utmref = true; }
+        if (cmd.coords == "qth") { opts.qth = true; }
+        coords.options = opts;
+        coords.addTo(map);
     }
     if (cmd.hasOwnProperty("legend")) {
         if (typeof cmd.legend === "string" && cmd.legend.length > 0) {
@@ -2196,7 +2355,7 @@ function doCommand(cmd) {
                     return div;
                 };
                 legend.addTo(map);
-            };
+            }
             legend.getContainer().style.visibility = 'visible'; // if already exist use visibility to show/hide
             legend.getContainer().innerHTML = cmd.legend;       //  set content of legend
         }
@@ -2210,7 +2369,7 @@ function doCommand(cmd) {
     var existsalready = false;
     // Add a new base map layer
     if (cmd.map && cmd.map.hasOwnProperty("name") && cmd.map.name.length>0 && cmd.map.hasOwnProperty("url") && cmd.map.hasOwnProperty("opt")) {
-        console.log("BASE",cmd.map);
+        // console.log("BASE",cmd.map);
         if (basemaps.hasOwnProperty(cmd.map.name)) { existsalready = true; }
         if (cmd.map.hasOwnProperty("wms")) {   // special case for wms
             console.log("New WMS:",cmd.map.name);
@@ -2228,6 +2387,11 @@ function doCommand(cmd) {
         //if (!existsalready && !inIframe) {
         if (!existsalready) {
             layercontrol.addBaseLayer(basemaps[cmd.map.name],cmd.map.name);
+        }
+        // if new layer is only layer then show it.
+        if (Object.keys(basemaps).length === 1) {
+            baselayername = cmd.map.name;
+            basemaps[baselayername].addTo(map);
         }
     }
     // Add or swap new minimap layer
@@ -2304,7 +2468,8 @@ function doCommand(cmd) {
         if (!cmd.map.hasOwnProperty("visible") || (cmd.map.visible != false)) {
             map.addLayer(overlays[cmd.map.overlay]);
         }
-        if (cmd.map.hasOwnProperty("fit") && (cmd.map.fit === true)) { map.fitBounds(overlays[cmd.map.overlay].getBounds()); }
+        if (cmd.map.hasOwnProperty("fly") && (cmd.map.fly === true)) { map.flyToBounds(overlays[cmd.map.overlay].getBounds()); }
+        else if (cmd.map.hasOwnProperty("fit") && (cmd.map.fit === true)) { map.fitBounds(overlays[cmd.map.overlay].getBounds()); }
     }
     // Add a new NVG XML overlay layer
     if (cmd.map && cmd.map.hasOwnProperty("overlay") && cmd.map.hasOwnProperty("nvg") ) {
@@ -2375,11 +2540,12 @@ function doCommand(cmd) {
         if (!cmd.map.hasOwnProperty("visible") || (cmd.map.visible != false)) {
             map.addLayer(overlays[cmd.map.overlay]);
         }
-        if (cmd.map.hasOwnProperty("fit")) { map.fitBounds(overlays[cmd.map.overlay].getBounds()); }
+        if (cmd.map.hasOwnProperty("fly") && cmd.map.fly === true) { map.flyToBounds(overlays[cmd.map.overlay].getBounds()); }
+        else if (cmd.map.hasOwnProperty("fit") && cmd.map.fit === true) { map.fitBounds(overlays[cmd.map.overlay].getBounds()); }
     }
 
     var custIco = function() {
-        var col = cmd.map.iconColor || "#910000";
+        var col = cmd.map.iconColor ?? "#910000";
         var myMarker = L.VectorMarkers.icon({
             icon: "circle",
             markerColor: col,
@@ -2413,15 +2579,20 @@ function doCommand(cmd) {
             overlays[cmd.map.overlay].removeFrom(map);
             existsalready = true;
         }
-        //var opt = {async:true};
-        overlays[cmd.map.overlay] = omnivore.kml.parse(cmd.map.kml, null, custIco());
+        try {
+            const parser = new DOMParser();
+            const kml = parser.parseFromString(cmd.map.kml, 'text/xml');
+            const track = new L.KML(kml);
+            overlays[cmd.map.overlay] = track;
+        } catch(e) { console.log("Failed to parse KML") }
         if (!existsalready) {
             layercontrol.addOverlay(overlays[cmd.map.overlay],cmd.map.overlay);
         }
         if (!cmd.map.hasOwnProperty("visible") || (cmd.map.visible != false)) {
             overlays[cmd.map.overlay].addTo(map);
         }
-        if (cmd.map.hasOwnProperty("fit")) { map.fitBounds(overlays[cmd.map.overlay].getBounds()); }
+        if (cmd.map.hasOwnProperty("fly") && cmd.map.fly === true) { map.flyToBounds(overlays[cmd.map.overlay].getBounds()); }
+        else if (cmd.map.hasOwnProperty("fit") && cmd.map.fit === true) { map.fitBounds(overlays[cmd.map.overlay].getBounds()); }
     }
     // Add a new TOPOJSON overlay layer
     if (cmd.map && cmd.map.hasOwnProperty("overlay") && cmd.map.hasOwnProperty("topojson") ) {
@@ -2436,7 +2607,8 @@ function doCommand(cmd) {
         if (!cmd.map.hasOwnProperty("visible") || (cmd.map.visible != false)) {
             overlays[cmd.map.overlay].addTo(map);
         }
-        if (cmd.map.hasOwnProperty("fit")) { map.fitBounds(overlays[cmd.map.overlay].getBounds()); }
+        if (cmd.map.hasOwnProperty("fly") && cmd.map.fly === true) { map.flyToBounds(overlays[cmd.map.overlay].getBounds()); }
+        else if (cmd.map.hasOwnProperty("fit") && cmd.map.fit === true) { map.fitBounds(overlays[cmd.map.overlay].getBounds()); }
     }
     // Add a new GPX overlay layer
     if (cmd.map && cmd.map.hasOwnProperty("overlay") && cmd.map.hasOwnProperty("gpx") ) {
@@ -2451,7 +2623,8 @@ function doCommand(cmd) {
         if (!cmd.map.hasOwnProperty("visible") || (cmd.map.visible != false)) {
             overlays[cmd.map.overlay].addTo(map);
         }
-        if (cmd.map.hasOwnProperty("fit")) { map.fitBounds(overlays[cmd.map.overlay].getBounds()); }
+        if (cmd.map.hasOwnProperty("fly") && cmd.map.fly === true) { map.flyToBounds(overlays[cmd.map.overlay].getBounds()); }
+        else if (cmd.map.hasOwnProperty("fit") && cmd.map.fit === true) { map.fitBounds(overlays[cmd.map.overlay].getBounds()); }
     }
     // Add a new velocity overlay layer
     if (cmd.map && cmd.map.hasOwnProperty("overlay") && cmd.map.hasOwnProperty("velocity") ) {
@@ -2464,7 +2637,8 @@ function doCommand(cmd) {
         if (!cmd.map.hasOwnProperty("visible") || (cmd.map.visible != false)) {
             overlays[cmd.map.overlay].addTo(map);
         }
-        if (cmd.map.hasOwnProperty("fit")) { map.fitBounds(overlays[cmd.map.overlay].getBounds()); }
+        if (cmd.map.hasOwnProperty("fly") && cmd.map.fly === true) { map.flyToBounds(overlays[cmd.map.overlay].getBounds()); }
+        else if (cmd.map.hasOwnProperty("fit") && cmd.map.fit === true) { map.fitBounds(overlays[cmd.map.overlay].getBounds()); }
     }
     // Add a new overlay layer
     if (cmd.map && cmd.map.hasOwnProperty("overlay") && cmd.map.hasOwnProperty("url") && cmd.map.hasOwnProperty("opt")) {
@@ -2502,13 +2676,13 @@ function doCommand(cmd) {
             overlays[cmd.map.overlay].addTo(map);
         }
     }
-
     // Swap a base layer
     if (cmd.layer && basemaps.hasOwnProperty(cmd.layer)) {
         map.removeLayer(basemaps[baselayername]);
         baselayername = cmd.layer;
         basemaps[baselayername].addTo(map);
     }
+    // If set to none then remove the baselayer...
     if (cmd.layer && (cmd.layer === "none")) {
         map.removeLayer(basemaps[baselayername]);
         baselayername = cmd.layer;
@@ -2585,10 +2759,13 @@ function doCommand(cmd) {
         document.getElementById("maxage").value = cmd.maxage;
         setMaxAge();
     }
-    if (cmd.hasOwnProperty("heatmap")) {
-        heat.setOptions(cmd.heatmap);
-        document.getElementById("heatall").checked = !!cmd.heatmap;
-        heat.redraw();
+    // Replace heatmap layer with new array (and optionally options)
+    if (cmd.hasOwnProperty("heatmap") && heat) {
+        if (cmd.hasOwnProperty("options")) { heat.setOptions(cmd.options); }
+        heat.setLatLngs(cmd.heatmap);
+        // heat.setOptions(cmd.heatmap);
+        // document.getElementById("heatall").checked = !!cmd.heatmap;
+        // heat.redraw();
     }
     if (cmd.hasOwnProperty("panlock") && lockit === true) { doLock(true); }
     if (cmd.hasOwnProperty("zoomlock")) {
@@ -2605,22 +2782,31 @@ function doCommand(cmd) {
             map.touchZoom.enable();
         }
     }
+    if (cmd.hasOwnProperty("bounds")) {            // Move/Zoom map to new bounds
+        if (cmd.bounds.length === 2 && cmd.bounds[0].length === 2 && cmd.bounds[1].length === 2) {
+            if (cmd.hasOwnProperty("fly") && cmd.fly === true) {
+                map.flyToBounds(cmd.bounds);
+            } else {
+                map.fitBounds(cmd.bounds);
+            }
+        }
+    }
 }
 
 // handle any incoming GEOJSON directly - may style badly
 function doGeojson(n,g,l,o) {
     //console.log("GEOJSON",n,g,l,o)
-    var lay = l || g.name || "unknown";
+    var lay = l ?? g.name ?? "unknown";
     // if (!basemaps[lay]) {
     var opt = { style: function(feature) {
         var st = { stroke:true, color:"#910000", weight:1, fill:true, fillColor:"#910000", fillOpacity:0.15 };
         st = Object.assign(st,o);
         if (feature.hasOwnProperty("properties")) {
             //console.log("GPROPS", feature.properties)
-            st.color = feature.properties["stroke"] || st.color;
-            st.weight = feature.properties["stroke-width"] || st.weight;
-            st.fillColor = feature.properties["fill-color"] || feature.properties["fill"] || st.fillColor;
-            st.fillOpacity = feature.properties["fill-opacity"] || st.fillOpacity;
+            st.color = feature.properties["stroke"] ?? st.color;
+            st.weight = feature.properties["stroke-width"] ?? st.weight;
+            st.fillColor = feature.properties["fill-color"] ?? feature.properties["fill"] ?? st.fillColor;
+            st.fillOpacity = feature.properties["fill-opacity"] ?? st.fillOpacity;
             delete feature.properties["stroke"];
             delete feature.properties["stroke-width"];
             delete feature.properties["fill-color"];
@@ -2630,26 +2816,37 @@ function doGeojson(n,g,l,o) {
         }
         if (feature.hasOwnProperty("style")) {
             //console.log("GSTYLE", feature.style)
-            st.color = feature.style["stroke"] || st.color;
-            st.weight = feature.style["stroke-width"] || st.weight;
-            st.fillColor = feature.style["fill-color"] || feature.style["fill"] || st.fillColor;
-            st.fillOpacity = feature.style["fill-opacity"] || st.fillOpacity;
+            st.color = feature.style["stroke"] ?? st.color;
+            st.weight = feature.style["stroke-width"] ?? st.weight;
+            st.fillColor = feature.style["fill-color"] ?? feature.style["fill"] ?? st.fillColor;
+            st.fillOpacity = feature.style["fill-opacity"] ?? st.fillOpacity;
         }
-        if (feature.hasOwnProperty("geometry") && feature.geometry.hasOwnProperty("type") && feature.geometry.type === "LineString") {
+        if (feature.hasOwnProperty("geometry") && feature.geometry.hasOwnProperty("type") && (feature.geometry.type === "LineString" || feature.geometry.type === "MultiLineString")  ) {
             st.fill = false;
         }
         return st;
     }}
     opt.pointToLayer = function (feature, latlng) {
         var myMarker;
+        if (feature.properties.hasOwnProperty("icon")) {
+            var regi = /^[S,G,E,I,O][A-Z]{3}.*/i;  // if it looks like a SIDC code
+            if (regi.test(feature.properties.icon)) {
+                feature.properties.SIDC = (feature.properties.icon.toUpperCase()+"------------").substr(0,12);
+                delete feature.properties.icon;
+            }
+        }
         if (feature.properties.hasOwnProperty("SIDC")) {
             myMarker = new ms.Symbol( feature.properties.SIDC.toUpperCase(), {
-                uniqueDesignation:unescape(encodeURIComponent(feature.properties.title)) ,
+                uniqueDesignation:unescape(encodeURIComponent(feature.properties.title||feature.properties.unit)),
                 country:feature.properties.country,
                 direction:feature.properties.bearing,
                 additionalInformation:feature.properties.modifier,
-                size:24
+                size:25
             });
+            if (myMarker.hasOwnProperty("metadata") && myMarker.metadata.hasOwnProperty("echelon")) {
+                var sz = iconSz[myMarker.metadata.echelon];
+                myMarker.setOptions({size:sz});
+            }
             myMarker = L.icon({
                 iconUrl: myMarker.toDataURL(),
                 iconAnchor: [myMarker.getAnchor().x, myMarker.getAnchor().y],
@@ -2658,8 +2855,8 @@ function doGeojson(n,g,l,o) {
         }
         else {
             myMarker = L.VectorMarkers.icon({
-                icon: feature.properties["marker-symbol"] || "circle",
-                markerColor: (feature.properties["marker-color"] || "#910000"),
+                icon: feature.properties["marker-symbol"] ?? "circle",
+                markerColor: (feature.properties["marker-color"] ?? "#910000"),
                 prefix: 'fa',
                 iconColor: 'white'
             });
@@ -2675,7 +2872,7 @@ function doGeojson(n,g,l,o) {
         delete feature.properties["marker-size"];
         var nf = {title:feature.properties.title, name:feature.properties.name};
         feature.properties = Object.assign(nf, feature.properties);
-        return L.marker(latlng, {title:feature.properties.title || "", icon:myMarker});
+        return L.marker(latlng, {title:feature.properties.title ?? "", icon:myMarker});
     }
     opt.onEachFeature = function (f,l) {
         if (f.properties && Object.keys(f.properties).length > 0) {
@@ -2700,5 +2897,3 @@ function doGeojson(n,g,l,o) {
     layers[lay].addLayer(markers[n]);
     map.addLayer(layers[lay]);
 }
-
-connect();

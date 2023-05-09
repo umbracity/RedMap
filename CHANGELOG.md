@@ -1,11 +1,53 @@
 ### Change Log for Node-RED Worldmap
 
+ - v2.37.2 - If custom layer is only layer then show it automatically. Issue #230
+ - v2.37.1 - Warn (and drop) messages that are missing a payload. Issue #229
+ - v2.37.0 - Allow fly instead of fit option when using command to move view window. (PR #225)
+ - v2.36.0 - Add edge icons for SIDC markers just off the map.
+ - v2.35.0 - Let clickable:false work for markers as well.
+ - v2.34.0 - Let icon "url" be a local fixed path. PR #223
+ - v2.33.0 - Let shapes create click event. from PR #221
+             Fix heatmap delete point bug. Issue #222
+ - v2.32.3 - Fix map split in iframe position
+ - v2.32.1 - Let command.heatmap replace complete heatmap array.
+ - v2.32.0 - Change || to nullish operator ?? to fix numerous dodgy assignments. Issue #219
+             Delete marker now also removes from heatmap layer. Issue #218
+
+ - v2.31.3 - Undo previous fix as while more technically correct - doesn't look so good. Issue #217
+ - v2.31.2 = Fix more antimeridian crossing wrinkles. Issue #216
+ - v2.31.1 - Fix missing type property for drawings, and pass back feedback value. Add route distance. Issue #213, Issue #212, PR #215
+ - v2.31.0 - Better handling of KML files. Issue #211
+
+ - v2.30.3 - Fix for iframe height. Issue #210
+ - v2.30.2 - Fix for bad handling of mapbox id. Issue #208
+ - v2.30.1 - Don't resend bounds if not changed. Issue #209
+ - v2.30.0 - Add show/hide ruler option. PR #206
+
+ - v2.29.0 - Change locate to be a toggle and add command (trackme) to set style. Issue #202
+
+ - v2.28.3 - Let button declaration be an array
+ - v2.28.1 - Fix layer command bug for non-core layers. Issue #195
+ - v2.28.0 - Better Handling of sidc icons in geojson
+
+ - v2.27.3 - Try to handle greatcircles crossing antimeridian
+ - v2.27.1 - Reload existing markers for late joiners
+
+ - v2.26.1 - Add QTH/Maidenhead option also
+ - v2.26.0 - Add UTM and MGRS to coordinate display options.
+
+ - v2.25.0 - Add bounds command to set overall map bounds.
+
+ - v2.24.3 - Fix geojson incorrect fill.
+ - v2.24.2 - Changes to drawing colours to be more visible.
+ - v2.24.1 - Fix ellipse accuracy.
+ - v2.24.0 - Add greatcircle option, fix non default httpRoot. Issue #193
+
  - v2.23.5 - Fix addtoheatmap. Issue #192
  - v2.23.4 - Fix opacity of area borders
  - v2.23.3 - Fix initial load of maps
  - v2.23.2 - Add convex-hull example
  - v2.23.1 - Fix saving of custom map layer
- - v2.23.0 - Give logo and id so it can be overridden by toplogo command. PR #188.
+ - v2.23.0 - Give logo an id so it can be overridden by toplogo command. PR #188.
 
  - v2.22.3 - Don't show empty popup for geojson object. Issue #186. Add wobble to null island.
  - v2.22.2 - Be more tolerant of speed string types

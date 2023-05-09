@@ -11,15 +11,26 @@ map web page for plotting "things" on.
 
 ### Updates
 
-- v2.23.5 - Fix addtoheatmap. Issue #192
-- v2.23.4 - Fix opacity of area borders
-- v2.23.3 - Fix initial load of maps
-- v2.23.2 - Add convex-hull example
-- v2.23.1 - Fix saving of custom map layer
-- v2.23.0 - Give logo and id so it can be overridden by toplogo command. PR #188.
-- v2.22.3 - Don't show empty popup for geojson object. Issue #186. Add wobble to null island.
-- v2.22.2 - Be more tolerant of speed string types
-- v2.22.0 - Separate out layer events in worldmap in
+- v2.37.2 - If custom layer is only layer then show it automatically. Issue #230
+- v2.37.1 - Warn (and drop) messages that are missing a payload. Issue #229
+- v2.37.0 - Allow fly instead of fit option when using command to move view window. (PR #225)
+- v2.36.0 - Add edge icons for SIDC markers just off the map.
+- v2.35.0 - Let clickable:false work for markers as well.
+- v2.34.0 - Let icon "url" be a local fixed path. PR #223
+- v2.33.0 - Let shapes create click event. from PR #221
+            Fix heatmap delete point bug. Issue #222
+- v2.32.2 - Fix map split in iframe position
+- v2.32.1 - Let command.map.heatmap replace complete heatmap array.
+- v2.32.0 - Change || to nullish operator ?? to fix numerous dodgy assignments. Issue #219
+            Delete marker now also removes from heatmap layer. Issue #218
+- v2.31.3 - Undo previous fix as while more technically correct - doesn't look so good. Issue #217
+- v2.31.2 = Fix more antimeridian crossing wrinkles. Issue #216
+- v2.31.1 - Fix missing type property for drawings, and pass back feedback value. Add route distance. Issue #213, Issue #212, PR #215
+- v2.31.0 - Better handling of KML files. Issue #211
+- v2.30.3 - Fix for iframe height. Issue #210
+- v2.30.2 - Fix for bad handling of mapbox id. Issue #208
+- v2.30.1 - Don't resend bounds if not changed. Issue #209
+- v2.30.0 - Add show/hide ruler option. PR #206
 
 - see [CHANGELOG](https://github.com/dceejay/RedMap/blob/master/CHANGELOG.md) for full list of changes.
 
@@ -61,6 +72,7 @@ Optional properties include
  - **weblink** : adds a link to an external page. Either set a url as a *string*, or an *object* like `{"name":"BBC News", "url":"https://news.bbc.co.uk", "target":"_new"}`, or multiple links with an *array of objects* `[{"name":"BBC News", "url":"https://news.bbc.co.uk", "target":"_new"},{"name":"node-red", "url":"https://nodered.org", "target":"_new"}]`
  - **addtoheatmap** : set to <i>false</i> to exclude point from contributing to the heatmap layer. (default true)
  - **intensity** : set to a value of 0.1 - 1.0 to set the intensity of the point on the heatmap layer. (default 1.0)
+ - **clickable** : Default true. Setting to false disables showing any popup.
  - **popped** : set to true to automatically open the popup info box, set to false to close it.
  - **popup** : html to fill the popup if you don't want the automatic default of the properties list. Using this overrides photourl, videourl and weblink options.
  - **label** : displays the contents as a permanent label next to the marker, or
@@ -118,7 +130,7 @@ SIDC codes can be generated using the online tool - https://spatialillusions.com
 
 There are lots of extra options you can specify as `msg.payload.options` - see the <a href="https://spatialillusions.com/milsymbol/documentation.html" target="mapinfo">milsymbol docs here</a>.
 
-### Areas, Lines and Rectangles
+### Areas, Rectangles, Lines, and GreatCircles
 
 If the msg.payload contains an **area** property - that is an array of co-ordinates, e.g.
 
@@ -128,7 +140,14 @@ then rather than draw a point and icon it draws the polygon. If the "area" array
 elements, then it assumes this is a bounding box for a rectangle and draws a rectangle.
 
 Likewise if it contains a **line** property it will draw the polyline.
-If the payload also includes a property `fit:true` the map will zoom to fit the line or area.
+If the payload also includes a property `fit:true` the map will zoom to fit the line or area. You can also optionally use `fly:true` instead of fit if required for a more animated look.
+
+Finally if a **greatcircle** property is set containing an array of two coordinates then an arc
+following the great circle between the two co-ordinates is plotted.
+
+    msg.payload = {name:"GC1", color:"#ff00ff", greatcircle:[ [51.464,0], [25.76,-80.18] ] }
+
+Shapes can also have a **popup** property containing html, but you MUST also set a property `clickable:true` in order to allow it to be seen.
 
 There are extra optional properties you can specify - see Options below.
 
@@ -244,6 +263,7 @@ Areas, Rectangles, Lines, Circles and Ellipses can also specify more optional pr
 
 Other properties can be found in the leaflet documentation.
 
+Shapes can also have a **popup** property containing html, but you MUST also set a property `clickable:true` in order to allow it to be seen.
 
 ### Drawing
 
@@ -379,6 +399,7 @@ Optional properties include
  - **lat** - move map to specified latitude.
  - **lon** - move map to specified longitude.
  - **zoom** - move map to specified zoom level (1 - world, 13 to 20 max zoom depending on map).
+ - **bounds** - if set to an array `[ [ lat(S), lon(W) ], [lat(N), lon(E)] ]` - sets the overall map bounds.
  - **layer** - set map to specified base layer name - `{"command":{"layer":"Esri"}}`
  - **search** - search markers on map for name containing `string`. If not found in existing markers, will then try geocoding looking using Nominatim. An empty string `""` clears the search results. - `{"command":{"search":"Winchester"}}`
  - **showlayer** - show the named overlay(s) - `{"command":{"showlayer":"foo"}}` or `{"command":{"showlayer":["foo","bar"]}}`
@@ -392,18 +413,21 @@ Optional properties include
    - **wms** - true/false/grey, specifies if the data is provided by a Web Map Service (if grey sets layer to greyscale)
    - **bounds** - sets the bounds of an Overlay-Image. 2 Dimensional Array that defines the top-left and bottom-right Corners (lat/lon Points)
    - **delete** - name or array of names of base layers and/or overlays to delete and remove from layer menu.
- - **heatmap** - set heatmap options object see https://github.com/Leaflet/Leaflet.heat#reference
+ - **heatmap** - set heatmap latlngs array object see https://github.com/Leaflet/Leaflet.heat#reference
+ - **options** - if heatmap set, then use this to set heatmap options object see https://github.com/Leaflet/Leaflet.heat#reference
  - **clear** - layer name - to clear a complete layer and remove from layer menu - `{"command":{"clear":"myOldLayer"}}`
  - **panlock** - lock the map area to the current visible area. - `{"command":{"panlock":true}}`
  - **panit** - auto pan to the latest marker updated.  - `{"command":{"panit":true}}`
  - **zoomlock** - locks the zoom control to the current value and removes zoom control - `{"command":{"zoomlock":true}}`
  - **hiderightclick** - disables the right click that allows adding or deleting points on the map - `{"command":{"hiderightclick":true}}`
  - **coords** - turns on and off a display of the current mouse co-ordinates. Values can be "deg", "dms", or "none" (default). - `{"command":{"coords":"deg"}}`
+ - **showruler** - turns on and off a display of the ruler control. Values can be "true" or "false". - `{"command":{"showruler":true}}`
  - **button** - if supplied with a `name` and `icon` property - adds a button to provide user input - sends
- a msg `{"action":"button", "name":"the_button_name"}` to the worldmap in node. If supplied with a `name` property only, it will remove the button. Optional `position` property can be 'bottomright', 'bottomleft', 'topleft' or 'topright' (default).
+ a msg `{"action":"button", "name":"the_button_name"}` to the worldmap in node. If supplied with a `name` property only, it will remove the button. Optional `position` property can be 'bottomright', 'bottomleft', 'topleft' or 'topright' (default). button can also be an array of button objects.
  - **contextmenu** - html string to define the right click menu when not on a marker. Defaults to the simple add marker input. Empty string `""` disables this right click.
  - **toptitle** - Words to replace title in title bar (if not in iframe)
  - **toplogo** - URL to logo image for top tile bar (if not in iframe) - ideally 60px by 24px.
+ - **trackme** - Turns on/off the browser self locating. Boolean false = off, true = cyan circle showing accuracy error, or an object like `{"command":{"trackme":{"name":"Dave","icon":"car","iconColor":"blue","layer":"mytrack","accuracy":false}}}`. Usual marker options can be applied. 
 
 #### To switch layer, move map and zoom
 
@@ -424,6 +448,8 @@ When clicked the button will send an event to the `worldmap in` node containing 
 to remove
 
     msg.payload.command = { "button": { "name":"My Fancy Button" } };
+
+Multiple buttons can declared by using an array of button objects.
 
 #### To add a custom popup or contextmenu
 
@@ -541,7 +567,7 @@ The geojson features may contain a `properties` property. That may also include 
 
 The `opt` property is optional. See the <a href="https://leafletjs.com/examples/geojson/">Leaflet geojson docs</a> for more info on possible options. Note: only simple options are supported as functions cannot be serialised.
 
-The `fit` property is optional. If boolean true the map will automatically zoom to fit the area relevant to the geojson. You can also set `clickable` true to return the properties of the clicked feature to the worldmap-in node.
+The `fit` property is optional, and you can also use `fly` if you wish. If boolean true the map will automatically zoom to fit the area relevant to the geojson, or use the 'fly' to animation style. You can also set `clickable` true to return the properties of the clicked feature to the worldmap-in node.
 
 see https://leafletjs.com/examples/geojson/ for more details about options for opt.
 
@@ -560,7 +586,7 @@ As per the geojson overlay you can also inject a KML layer, GPX layer or TOPOJSO
  - **icon** : <a href="https://fontawesome.com/v4.7.0/icons/" target="mapinfo">font awesome</a> icon name.
  - **iconColor** : Standard CSS colour name or #rrggbb hex value.
 
-Again the boolean `fit` property can be added to make the map zoom to the relevant area, and the `visible` property can be set false to not immediately show the layer.
+Again the boolean `fit` or `fly` properties can be added to make the map zoom to the relevant area, and the `visible` property can be set false to not immediately show the layer.
 
 #### To add a Velocity Grid Overlay
 
